@@ -1,6 +1,7 @@
-// Suporte remoto. O app de cada pessoa informa o ID do próprio computador; só administradores (T.I.) veem a lista e pedem a conexão.
-// Para a maioria, a pessoa ainda precisa aceitar a conexão na tela dela. Só a conta master (REMOTO_MASTER_EMAIL) recebe de volta
-// a senha permanente do computador e conecta direto; essa senha nunca é devolvida a outro admin, e toda conexão é registrada.
+// Suporte remoto. O app de cada pessoa informa o ID do próprio computador e guarda a própria senha de acesso (ela só
+// aparece na tela dela). Administradores veem quem está online e conectam de duas formas: pelo painel, que pede aceite
+// na tela da pessoa; ou digitando o código e a senha que a pessoa informou por telefone/chat, que entra direto. Toda
+// conexão fica registrada para todos os administradores verem.
 import { Router } from "express";
 import db from "../db/db.js";
 import authMiddleware from "../middlewares/middleware.js";
@@ -10,10 +11,8 @@ const falha = (res, e, padrao) => { console.error("[remoto]", e?.message); retur
 const ID_REMOTO = /^[0-9]{6,12}$/;
 const VALIDO_MS = 5 * 60_000;
 const chave = (req) => `${req.user.empresa_id}:${req.user.id}`;
-const EMAIL_MASTER = String(process.env.REMOTO_MASTER_EMAIL || "lukasao.11@gmail.com").toLowerCase();
-const isMaster = (req) => String(req.user.email || "").toLowerCase() === EMAIL_MASTER;
 
-// Só memória: o app volta a avisar a cada 60 s, então a lista (e as senhas) se refazem sozinhas depois de reiniciar o servidor.
+// Só memória: o app volta a avisar a cada 60 s, então a lista se refaz sozinha depois de reiniciar o servidor.
 const dispositivos = new Map();
 const pedidos = [];
 
@@ -36,9 +35,7 @@ router.post("/registro", (req, res) => {
   const id = String(req.body?.id ?? "");
   if (!ID_REMOTO.test(id)) return res.status(400).json({ error: "ID inválido." });
   const computador = String(req.body?.computador ?? "").replace(/[^\w .-]/g, "").slice(0, 40);
-  const senhaEnviada = typeof req.body?.senha === "string" ? req.body.senha.slice(0, 64) : "";
-  const anterior = dispositivos.get(chave(req));
-  dispositivos.set(chave(req), { id, computador, em: Date.now(), senha: senhaEnviada || anterior?.senha || "" });
+  dispositivos.set(chave(req), { id, computador, em: Date.now() });
   res.json({ ok: true });
 });
 
@@ -66,38 +63,44 @@ export function criarRemotoAdminRoutes({ requireAdmin }) {
         const d = dispositivos.get(`${empresa}:${p.id}`);
         return { usuarioId: p.id, nome: p.nome, computador: d?.computador ?? "", online: !!d && agora - d.em < VALIDO_MS, visto: d ? new Date(d.em).toISOString() : null, temId: !!d };
       }).filter((p) => p.temId);
-      // O registro de conexões (e o modo direta/com aceite) só é entregue à conta master: as demais nem veem esse painel.
-      const master = isMaster(req);
-      let auditoria = [];
-      if (master) {
-        await garantirEsquema();
-        [auditoria] = await db.query(
-          `SELECT a.criado_em, adm.nome AS admin, alvo.nome AS alvo, a.modo FROM remoto_auditoria a
-           JOIN usuarios adm ON adm.id = a.admin_id JOIN usuarios alvo ON alvo.id = a.alvo_id
-           WHERE a.empresa_id = ? ORDER BY a.id DESC LIMIT 30`, [empresa]);
-      }
+      await garantirEsquema();
+      const [auditoria] = await db.query(
+        `SELECT a.criado_em, adm.nome AS admin, COALESCE(alvo.nome, 'Desconhecido') AS alvo, a.modo FROM remoto_auditoria a
+         JOIN usuarios adm ON adm.id = a.admin_id LEFT JOIN usuarios alvo ON alvo.id = a.alvo_id
+         WHERE a.empresa_id = ? ORDER BY a.id DESC LIMIT 30`, [empresa]);
       res.json({
         dispositivos: lista.sort((a, b) => Number(b.online) - Number(a.online) || a.nome.localeCompare(b.nome)),
         pedidos: pedidos.filter((p) => p.empresaId === empresa).slice(0, 20).map((p) => ({ usuarioId: p.usuarioId, nome: pessoas.find((x) => x.id === p.usuarioId)?.nome ?? p.nome, mensagem: p.mensagem, em: new Date(p.em).toISOString() })),
         auditoria: auditoria.map((a) => ({ em: a.criado_em, admin: a.admin, alvo: a.alvo, modo: a.modo })),
-        master,
       });
     } catch (e) { falha(res, e, "Não foi possível carregar o suporte remoto."); }
   });
 
-  // Entrega o ID (e, só ao master, a senha permanente) a quem é administrador, e deixa a conexão registrada.
+  // Entrega o ID a quem é administrador e deixa a conexão registrada. A pessoa ainda precisa aceitar na tela dela.
   admin.post("/conectar", async (req, res) => {
     try {
       const alvo = Number(req.body?.usuarioId);
       if (!Number.isInteger(alvo) || alvo <= 0) return res.status(400).json({ error: "Pessoa inválida." });
       const d = dispositivos.get(`${req.user.empresa_id}:${alvo}`);
       if (!d || Date.now() - d.em >= VALIDO_MS) return res.status(409).json({ error: "Essa pessoa está sem o Workspace aberto agora." });
-      const master = isMaster(req);
-      const modo = master && d.senha ? "direta" : "pedido";
       await garantirEsquema();
-      await db.query("INSERT INTO remoto_auditoria (empresa_id, admin_id, alvo_id, remoto_id, modo) VALUES (?, ?, ?, ?, ?)", [req.user.empresa_id, req.user.id, alvo, d.id, modo]);
-      res.json({ id: d.id, senha: modo === "direta" ? d.senha : undefined });
+      await db.query("INSERT INTO remoto_auditoria (empresa_id, admin_id, alvo_id, remoto_id, modo) VALUES (?, ?, ?, ?, 'pedido')", [req.user.empresa_id, req.user.id, alvo, d.id]);
+      res.json({ id: d.id });
     } catch (e) { falha(res, e, "Não foi possível iniciar a conexão."); }
+  });
+
+  // Só registra no histórico: a conexão em si (com o código e a senha que a pessoa informou) já aconteceu no computador do administrador.
+  admin.post("/conectar-manual", async (req, res) => {
+    try {
+      const id = String(req.body?.id ?? "");
+      if (!ID_REMOTO.test(id)) return res.status(400).json({ error: "Código inválido." });
+      const empresa = req.user.empresa_id;
+      const dono = [...dispositivos.entries()].find(([k, d]) => k.startsWith(`${empresa}:`) && d.id === id);
+      const alvo = dono ? Number(dono[0].split(":")[1]) : 0;
+      await garantirEsquema();
+      await db.query("INSERT INTO remoto_auditoria (empresa_id, admin_id, alvo_id, remoto_id, modo) VALUES (?, ?, ?, ?, 'manual')", [empresa, req.user.id, alvo, id]);
+      res.status(201).json({ ok: true });
+    } catch (e) { falha(res, e, "Não foi possível registrar a conexão."); }
   });
   return admin;
 }
