@@ -66,7 +66,7 @@ export function criarRemotoAdminRoutes({ requireAdmin }) {
          WHERE a.empresa_id = ? ORDER BY a.id DESC LIMIT 30`, [empresa]);
       res.json({
         dispositivos: lista.sort((a, b) => Number(b.online) - Number(a.online) || a.nome.localeCompare(b.nome)),
-        pedidos: pedidos.filter((p) => p.empresaId === empresa).slice(0, 20).map((p) => ({ usuarioId: p.usuarioId, nome: p.nome, mensagem: p.mensagem, em: new Date(p.em).toISOString() })),
+        pedidos: pedidos.filter((p) => p.empresaId === empresa).slice(0, 20).map((p) => ({ usuarioId: p.usuarioId, nome: pessoas.find((x) => x.id === p.usuarioId)?.nome ?? p.nome, mensagem: p.mensagem, em: new Date(p.em).toISOString() })),
         auditoria: auditoria.map((a) => ({ em: a.criado_em, admin: a.admin, alvo: a.alvo })),
       });
     } catch (e) { falha(res, e, "Não foi possível carregar o suporte remoto."); }
