@@ -1,5 +1,6 @@
-// Suporte remoto. O app de cada pessoa informa o ID do próprio computador; só administradores (T.I.) veem a lista e pedem a conexão,
-// e cada pedido fica registrado. Quem recebe a conexão ainda precisa aceitar na tela dele.
+// Suporte remoto. O app de cada pessoa informa o ID do próprio computador; só administradores (T.I.) veem a lista e pedem a conexão.
+// Para a maioria, a pessoa ainda precisa aceitar a conexão na tela dela. Só a conta master (REMOTO_MASTER_EMAIL) recebe de volta
+// a senha permanente do computador e conecta direto; essa senha nunca é devolvida a outro admin, e toda conexão é registrada.
 import { Router } from "express";
 import db from "../db/db.js";
 import authMiddleware from "../middlewares/middleware.js";
@@ -9,8 +10,10 @@ const falha = (res, e, padrao) => { console.error("[remoto]", e?.message); retur
 const ID_REMOTO = /^[0-9]{6,12}$/;
 const VALIDO_MS = 5 * 60_000;
 const chave = (req) => `${req.user.empresa_id}:${req.user.id}`;
+const EMAIL_MASTER = String(process.env.REMOTO_MASTER_EMAIL || "lukasao.11@gmail.com").toLowerCase();
+const isMaster = (req) => String(req.user.email || "").toLowerCase() === EMAIL_MASTER;
 
-// Só memória: o app volta a avisar a cada 60 s, então a lista se refaz sozinha depois de reiniciar o servidor.
+// Só memória: o app volta a avisar a cada 60 s, então a lista (e as senhas) se refazem sozinhas depois de reiniciar o servidor.
 const dispositivos = new Map();
 const pedidos = [];
 
@@ -18,8 +21,10 @@ let esquemaPronto = null;
 const garantirEsquema = () => esquemaPronto ??= db.query(
   `CREATE TABLE IF NOT EXISTS remoto_auditoria (
      id BIGINT AUTO_INCREMENT PRIMARY KEY, empresa_id INT NOT NULL, admin_id INT NOT NULL, alvo_id INT NOT NULL,
-     remoto_id VARCHAR(16) NOT NULL, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX (empresa_id, criado_em)
-   )`).catch((e) => { esquemaPronto = null; throw e; });
+     remoto_id VARCHAR(16) NOT NULL, modo VARCHAR(10) NOT NULL DEFAULT 'pedido', criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX (empresa_id, criado_em)
+   )`)
+  .then(() => db.query("ALTER TABLE remoto_auditoria ADD COLUMN modo VARCHAR(10) NOT NULL DEFAULT 'pedido'").catch((e) => { if (e?.errno !== 1060) throw e; }))
+  .catch((e) => { esquemaPronto = null; throw e; });
 
 const router = Router();
 router.use(authMiddleware);
@@ -31,7 +36,9 @@ router.post("/registro", (req, res) => {
   const id = String(req.body?.id ?? "");
   if (!ID_REMOTO.test(id)) return res.status(400).json({ error: "ID inválido." });
   const computador = String(req.body?.computador ?? "").replace(/[^\w .-]/g, "").slice(0, 40);
-  dispositivos.set(chave(req), { id, computador, em: Date.now() });
+  const senhaEnviada = typeof req.body?.senha === "string" ? req.body.senha.slice(0, 64) : "";
+  const anterior = dispositivos.get(chave(req));
+  dispositivos.set(chave(req), { id, computador, em: Date.now(), senha: senhaEnviada || anterior?.senha || "" });
   res.json({ ok: true });
 });
 
@@ -67,21 +74,24 @@ export function criarRemotoAdminRoutes({ requireAdmin }) {
       res.json({
         dispositivos: lista.sort((a, b) => Number(b.online) - Number(a.online) || a.nome.localeCompare(b.nome)),
         pedidos: pedidos.filter((p) => p.empresaId === empresa).slice(0, 20).map((p) => ({ usuarioId: p.usuarioId, nome: pessoas.find((x) => x.id === p.usuarioId)?.nome ?? p.nome, mensagem: p.mensagem, em: new Date(p.em).toISOString() })),
-        auditoria: auditoria.map((a) => ({ em: a.criado_em, admin: a.admin, alvo: a.alvo })),
+        auditoria: auditoria.map((a) => ({ em: a.criado_em, admin: a.admin, alvo: a.alvo, modo: a.modo })),
+        master: isMaster(req),
       });
     } catch (e) { falha(res, e, "Não foi possível carregar o suporte remoto."); }
   });
 
-  // Entrega o ID só a quem é administrador e deixa a conexão registrada.
+  // Entrega o ID (e, só ao master, a senha permanente) a quem é administrador, e deixa a conexão registrada.
   admin.post("/conectar", async (req, res) => {
     try {
       const alvo = Number(req.body?.usuarioId);
       if (!Number.isInteger(alvo) || alvo <= 0) return res.status(400).json({ error: "Pessoa inválida." });
       const d = dispositivos.get(`${req.user.empresa_id}:${alvo}`);
       if (!d || Date.now() - d.em >= VALIDO_MS) return res.status(409).json({ error: "Essa pessoa está sem o Workspace aberto agora." });
+      const master = isMaster(req);
+      const modo = master && d.senha ? "direta" : "pedido";
       await garantirEsquema();
-      await db.query("INSERT INTO remoto_auditoria (empresa_id, admin_id, alvo_id, remoto_id) VALUES (?, ?, ?, ?)", [req.user.empresa_id, req.user.id, alvo, d.id]);
-      res.json({ id: d.id });
+      await db.query("INSERT INTO remoto_auditoria (empresa_id, admin_id, alvo_id, remoto_id, modo) VALUES (?, ?, ?, ?, ?)", [req.user.empresa_id, req.user.id, alvo, d.id, modo]);
+      res.json({ id: d.id, senha: modo === "direta" ? d.senha : undefined });
     } catch (e) { falha(res, e, "Não foi possível iniciar a conexão."); }
   });
   return admin;
