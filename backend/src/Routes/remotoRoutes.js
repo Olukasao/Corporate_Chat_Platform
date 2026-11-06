@@ -66,16 +66,21 @@ export function criarRemotoAdminRoutes({ requireAdmin }) {
         const d = dispositivos.get(`${empresa}:${p.id}`);
         return { usuarioId: p.id, nome: p.nome, computador: d?.computador ?? "", online: !!d && agora - d.em < VALIDO_MS, visto: d ? new Date(d.em).toISOString() : null, temId: !!d };
       }).filter((p) => p.temId);
-      await garantirEsquema();
-      const [auditoria] = await db.query(
-        `SELECT a.criado_em, adm.nome AS admin, alvo.nome AS alvo FROM remoto_auditoria a
-         JOIN usuarios adm ON adm.id = a.admin_id JOIN usuarios alvo ON alvo.id = a.alvo_id
-         WHERE a.empresa_id = ? ORDER BY a.id DESC LIMIT 30`, [empresa]);
+      // O registro de conexões (e o modo direta/com aceite) só é entregue à conta master: as demais nem veem esse painel.
+      const master = isMaster(req);
+      let auditoria = [];
+      if (master) {
+        await garantirEsquema();
+        [auditoria] = await db.query(
+          `SELECT a.criado_em, adm.nome AS admin, alvo.nome AS alvo, a.modo FROM remoto_auditoria a
+           JOIN usuarios adm ON adm.id = a.admin_id JOIN usuarios alvo ON alvo.id = a.alvo_id
+           WHERE a.empresa_id = ? ORDER BY a.id DESC LIMIT 30`, [empresa]);
+      }
       res.json({
         dispositivos: lista.sort((a, b) => Number(b.online) - Number(a.online) || a.nome.localeCompare(b.nome)),
         pedidos: pedidos.filter((p) => p.empresaId === empresa).slice(0, 20).map((p) => ({ usuarioId: p.usuarioId, nome: pessoas.find((x) => x.id === p.usuarioId)?.nome ?? p.nome, mensagem: p.mensagem, em: new Date(p.em).toISOString() })),
         auditoria: auditoria.map((a) => ({ em: a.criado_em, admin: a.admin, alvo: a.alvo, modo: a.modo })),
-        master: isMaster(req),
+        master,
       });
     } catch (e) { falha(res, e, "Não foi possível carregar o suporte remoto."); }
   });
