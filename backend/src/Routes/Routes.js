@@ -34,7 +34,16 @@ import assistenteRoutes from "./assistenteRoutes.js";
 import phoneRoutes, { criarPhoneAdminRoutes } from "./phoneRoutes.js";
 import remotoRoutes, { criarRemotoAdminRoutes } from "./remotoRoutes.js";
 import criarIaAdminRoutes from "./iaAdminRoutes.js";
+import { listarFuncoes, modulosDoUsuario, salvarFuncao } from "../services/funcoesService.js";
 import chamadosRoutes from "./chamadosRoutes.js";
+import clienteLigacaoRoutes from "./clienteLigacaoRoutes.js";
+import presencaRoutes from "./presencaRoutes.js";
+import navegadorRoutes, { criarRotasNavegadorAdmin } from "./navegadorRoutes.js";
+import { criarServicoSaude } from "../services/saudeService.js";
+import { indiceTelefones } from "../services/indiceTelefonesService.js";
+import { configDoRelatorio, enviarRelatorio } from "../services/relatorioSemanalService.js";
+import { gravarConfig as gravarConfigIa, lerConfig as lerConfigIa } from "../services/iaAdminService.js";
+import { destinatarios as destinatariosDoBriefing } from "../services/briefingService.js";
 import { userHasNetworkDiagnosticPermission } from "../services/networkDiagnosticPermissionsService.js";
 import {
     AUDIT_LEVELS,
@@ -16542,8 +16551,8 @@ route.get("/admin/workspace/dispositivos", authMiddleware, requireAdmin, async (
 // Manda os computadores atualizarem para a versão publicada: em silêncio (padrão) ou com aviso na tela.
 route.post("/admin/workspace/forcar-atualizacao", authMiddleware, requireAdmin, async (req, res) => {
     try {
-        const sinal = gravarSinal({ obrigatoria: req.body?.obrigatoria === true, mensagem: req.body?.mensagem });
-        console.log(`[WORKSPACE] ${req.admin.nome} forçou a atualização para ${sinal.versao}${sinal.obrigatoria ? " (com aviso)" : " (silenciosa)"}.`);
+        const sinal = gravarSinal({ obrigatoria: req.body?.obrigatoria === true, mensagem: req.body?.mensagem, ignorarRegra: req.body?.ignorarRegra === true });
+        console.log(`[WORKSPACE] ${req.admin.nome} forçou a atualização para ${sinal.versao}${sinal.obrigatoria ? " (com aviso)" : " (silenciosa)"}${sinal.ignorarRegra ? ", IGNORANDO a regra de ligação/telefone aberto" : ""}.`);
         res.json({ sinal });
     } catch (err) {
         console.error("Erro ao forçar a atualização do Workspace:", err);
@@ -16630,6 +16639,105 @@ route.get("/admin/usuarios", authMiddleware, requireAdmin, async (req, res) => {
     } catch (err) {
         console.error("Erro ao buscar usuários administrativos:", err);
         res.status(500).json({ error: "Erro ao buscar usuários" });
+    }
+});
+
+// Painel de saúde (Admin): testa chat, banco, site, SGP e servidor de atualizações.
+const servicoSaude = criarServicoSaude();
+route.get("/admin/saude", authMiddleware, requireAdmin, async (_req, res) => {
+    try {
+        res.set("Cache-Control", "no-store").json(await servicoSaude.verificar());
+    } catch (err) {
+        console.error("Erro no painel de saúde:", err?.message);
+        res.status(500).json({ error: "Não foi possível verificar agora." });
+    }
+});
+
+// Relatório semanal da gestão (chat). Os destinatários são os mesmos do briefing diário (Admin > IA).
+route.get("/admin/relatorio", authMiddleware, requireAdmin, async (req, res) => {
+    try {
+        const empresaId = req.admin.empresa_id;
+        const [config, quem] = await Promise.all([lerConfigIa(empresaId), destinatariosDoBriefing(empresaId)]);
+        res.json({ ...configDoRelatorio(config), destinatarios: quem.map((u) => u.nome) });
+    } catch (err) {
+        console.error("Erro ao ler o relatório semanal:", err?.message);
+        res.status(500).json({ error: "Não foi possível carregar o relatório semanal." });
+    }
+});
+
+route.put("/admin/relatorio", authMiddleware, requireAdmin, async (req, res) => {
+    try {
+        const empresaId = req.admin.empresa_id;
+        const { ativo, dia, hora } = req.body || {};
+        if (ativo !== undefined && typeof ativo !== "boolean") return res.status(400).json({ error: "Dados inválidos." });
+        if (dia !== undefined && !(Number.isInteger(dia) && dia >= 0 && dia <= 6)) return res.status(400).json({ error: "Dia inválido." });
+        if (hora !== undefined && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(hora))) return res.status(400).json({ error: "Hora inválida." });
+        if (ativo !== undefined) await gravarConfigIa(empresaId, "relatorio_ativo", ativo ? "1" : "0");
+        if (dia !== undefined) await gravarConfigIa(empresaId, "relatorio_dia", String(dia));
+        if (hora !== undefined) await gravarConfigIa(empresaId, "relatorio_hora", String(hora));
+        res.json(configDoRelatorio(await lerConfigIa(empresaId)));
+    } catch (err) {
+        console.error("Erro ao salvar o relatório semanal:", err?.message);
+        res.status(500).json({ error: "Não foi possível salvar." });
+    }
+});
+
+// Teste: manda o relatório da última semana só para quem clicou e devolve o texto.
+route.post("/admin/relatorio/testar", authMiddleware, requireAdmin, async (req, res) => {
+    try {
+        const { enviados, texto } = await enviarRelatorio({ io: req.app.get("io"), empresaId: req.admin.empresa_id, para: req.admin.id });
+        res.json({ enviados, texto });
+    } catch (err) {
+        console.error("Erro ao testar o relatório semanal:", err?.message);
+        res.status(500).json({ error: "Não foi possível gerar o relatório agora." });
+    }
+});
+
+// Índice de telefones (só números): estatística e atualização manual a partir da exportação do SGP.
+route.get("/admin/telefones/indice", authMiddleware, requireAdmin, async (req, res) => {
+    try { res.json(await indiceTelefones.estatisticas(req.admin.empresa_id)); }
+    catch (err) { console.error("Erro no índice de telefones:", err?.message); res.status(500).json({ error: "Não foi possível ler o índice de telefones." }); }
+});
+route.post("/admin/telefones/indice/atualizar", authMiddleware, requireAdmin, async (req, res) => {
+    try { res.status(202).json({ iniciado: indiceTelefones.iniciarAtualizacao(req.admin.empresa_id) }); }
+    catch (err) {
+        console.error("Erro ao atualizar o índice de telefones:", err?.message);
+        res.status(500).json({ error: "Não foi possível atualizar o índice de telefones." });
+    }
+});
+
+// Funções: o que cada setor vê no Workspace.
+route.get("/me/funcoes", authMiddleware, async (req, res) => {
+    try {
+        res.json({ modulos: await modulosDoUsuario(req.user) });
+    } catch (err) {
+        console.error("Erro ao ler funções do usuário:", err?.message);
+        res.status(500).json({ error: "Erro ao carregar permissões" });
+    }
+});
+
+route.get("/admin/funcoes", authMiddleware, requireAdmin, async (req, res) => {
+    try {
+        res.json(await listarFuncoes(req.admin.empresa_id));
+    } catch (err) {
+        console.error("Erro ao listar funções:", err?.message);
+        res.status(500).json({ error: "Erro ao carregar funções" });
+    }
+});
+
+route.put("/admin/funcoes/:setorId", authMiddleware, requireAdmin, async (req, res) => {
+    try {
+        const setorId = Number(req.params.setorId);
+        const { modulos } = req.body || {};
+        if (!Number.isInteger(setorId) || setorId <= 0 || (modulos !== null && !Array.isArray(modulos))) {
+            return res.status(400).json({ error: "Dados inválidos." });
+        }
+        const salvo = await salvarFuncao(req.admin.empresa_id, setorId, modulos, req.admin.id);
+        res.json({ ok: true, modulos: salvo });
+    } catch (err) {
+        if (err?.status) return res.status(err.status).json({ error: err.message });
+        console.error("Erro ao salvar função:", err?.message);
+        res.status(500).json({ error: "Erro ao salvar função" });
     }
 });
 
@@ -17989,8 +18097,12 @@ route.use("/admin/phone", authMiddleware, criarPhoneAdminRoutes({ requireAdmin }
 route.use("/remoto", remotoRoutes);
 route.use("/admin/remoto", authMiddleware, criarRemotoAdminRoutes({ requireAdmin }));
 route.use("/admin/ia", authMiddleware, criarIaAdminRoutes({ requireAdmin }));
+route.use("/admin/navegador", authMiddleware, criarRotasNavegadorAdmin({ requireAdmin }));
 route.use("/ia", iaResumoRoutes);
 route.use("/chamados", chamadosRoutes);
+route.use("/clientes/ligacao", clienteLigacaoRoutes);
+route.use("/presenca", presencaRoutes);
+route.use("/navegador", navegadorRoutes);
 route.use(networkDiagnosticsRoutes);
 route.use(oltRoutes);
 route.use(purchaseModuleRoutes);

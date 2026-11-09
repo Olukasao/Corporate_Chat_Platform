@@ -8,13 +8,15 @@ import {
     obterPanorama,
     oltCloudConfigurada,
 } from "../services/oltCloudService.js";
+import { usuarioTemModulo } from "../services/funcoesService.js";
 import { sincronizarAlertasIgnorados } from "../services/iaAdminService.js";
 import { searchCustomers } from "../services/sgpCustomerService.js";
 
 // Incidentes de rede (OLT Cloud), somente leitura. Quem já tem acesso aos diagnósticos de rede (NOC) vê a tela.
 const router = Router();
 
-export const usuarioPodeVerRedeOlt = (usuario) => userHasNetworkDiagnosticPermission(usuario, "network_diagnostics.view");
+export const usuarioPodeVerRedeOlt = async (usuario) =>
+    (await usuarioTemModulo(usuario, "rede")) && (await userHasNetworkDiagnosticPermission(usuario, "network_diagnostics.view"));
 
 const exigirPermissao = async (req, res, next) => {
     try {

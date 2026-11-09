@@ -137,3 +137,14 @@ export const publica = (l) => ({
   usuarioId: l.usuario_id, ramal: l.ramal, sipUser: l.sip_user, sipDomain: l.sip_domain, sipServer: l.sip_server,
   sipPort: l.sip_port, transport: l.transport, displayName: l.display_name, ativo: !!l.ativo,
 });
+
+/**
+ * Número que se disca para falar com este ramal. A conta SIP usa o ramal completo (ex.: 7781010), mas a central só
+ * reconhece o número curto (1010): discar o completo cai em "telefone não existe". Tira o prefixo da central (padrão 778,
+ * ajustável em PHONE_PREFIXO_RAMAL; vazio desliga) quando sobram ao menos 3 dígitos.
+ */
+export function extensaoDeDiscagem(ramal, prefixo = process.env.PHONE_PREFIXO_RAMAL ?? "778") {
+    const r = String(ramal ?? "").trim();
+    const p = String(prefixo ?? "").trim();
+    return p && /^\d+$/.test(r) && r.startsWith(p) && r.length - p.length >= 3 ? r.slice(p.length) : r;
+}

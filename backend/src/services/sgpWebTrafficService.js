@@ -134,10 +134,11 @@ const fetchWithTimeout = async (path, {
     body = null,
     signal,
     redirect = "manual",
+    timeoutMs = null,
 } = {}) => {
     const config = getConfig();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs || config.timeoutMs);
     const abortFromParent = () => controller.abort(signal?.reason);
 
     if (signal?.aborted) {
@@ -464,4 +465,11 @@ export const getSgpWebCurrentTraffic = async (customer = {}, { signal } = {}) =>
             error: err.message,
         });
     }
+};
+
+/** Lê uma página do SGP web (GET) com o login do servidor, seguindo redirecionamentos. Só leitura. `timeoutMs` para exportações grandes. */
+export const sgpWebGet = async (path, { signal, timeoutMs } = {}) => {
+    await ensureSession({ signal });
+    const response = await fetchWithTimeout(path, { signal, redirect: "follow", timeoutMs });
+    return { status: response.status, url: response.url, html: await response.text() };
 };

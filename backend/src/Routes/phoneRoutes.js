@@ -4,7 +4,7 @@ import db from "../db/db.js";
 import authMiddleware from "../middlewares/middleware.js";
 import { criarLimitador } from "../services/assistenteIa.js";
 import {
-  auditar, cifrarSenha, decifrarSenha, garantirSchemaPhone, publica, telefoniaConfigurada, validarChamada, validarConta,
+  auditar, cifrarSenha, decifrarSenha, garantirSchemaPhone, publica, telefoniaConfigurada, validarChamada, validarConta, extensaoDeDiscagem,
 } from "../services/phoneService.js";
 
 const idValido = (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
@@ -63,7 +63,7 @@ router.get("/diretorio", async (req, res) => {
     const [linhas] = await db.query(
       `SELECT p.usuario_id, p.ramal, u.nome FROM phone_accounts p JOIN usuarios u ON u.id = p.usuario_id
        WHERE p.empresa_id = ? AND p.ativo = 1 AND u.deletado_em IS NULL ORDER BY u.nome ASC LIMIT 1000`, [req.user.empresa_id]);
-    res.json({ ramais: linhas.map((l) => ({ usuarioId: l.usuario_id, nome: l.nome, ramal: l.ramal })) });
+    res.json({ ramais: linhas.map((l) => ({ usuarioId: l.usuario_id, nome: l.nome, ramal: extensaoDeDiscagem(l.ramal) })) });
   } catch (e) { falha(res, e, "Não foi possível carregar os ramais."); }
 });
 

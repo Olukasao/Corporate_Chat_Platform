@@ -47,12 +47,13 @@ export function lerSinal(pasta = PASTA_CANAL()) {
 }
 
 /** Mesmo formato do force-update.mjs do servidor de atualizações. */
-export function montarSinal({ versao, obrigatoria = false, mensagem = "" }, agora = new Date()) {
+export function montarSinal({ versao, obrigatoria = false, mensagem = "", ignorarRegra = false }, agora = new Date()) {
     const texto = String(mensagem ?? "").trim().slice(0, 200);
     return {
         id: `${agora.getTime().toString(36)}-${crypto.randomBytes(4).toString("hex")}`,
         versao,
         obrigatoria: Boolean(obrigatoria),
+        ...(ignorarRegra === true ? { ignorarRegra: true } : {}),
         ...(texto ? { mensagem: texto } : {}),
         criadoEm: agora.toISOString(),
     };

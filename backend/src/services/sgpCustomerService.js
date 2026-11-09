@@ -316,15 +316,17 @@ const fetchJson = async (url, { signal } = {}) => {
     }
 };
 
-const fetchUraJson = async (contrato, { signal } = {}) => {
+const fetchUraJson = async (campos, { signal, caminho, timeoutMs } = {}) => {
+    // `campos` é o número do contrato (texto) ou um objeto com os campos do formulário (ex.: { telefone }).
+    const campo = typeof campos === "object" && campos !== null ? campos : { contrato: campos };
     const config = getUraConfig();
-    const timeoutMs = Math.max(1000, config.timeoutSeconds * 1000);
+    const limiteMs = Math.max(1000, timeoutMs || config.timeoutSeconds * 1000);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), limiteMs);
     const abortFromParent = () => controller.abort(signal?.reason);
     const formData = new FormData();
 
-    formData.append("contrato", String(contrato || "").trim());
+    Object.entries(campo).forEach(([nome, valor]) => formData.append(nome, String(valor ?? "").trim()));
 
     if (signal?.aborted) {
         clearTimeout(timeout);
@@ -334,7 +336,7 @@ const fetchUraJson = async (contrato, { signal } = {}) => {
     signal?.addEventListener("abort", abortFromParent, { once: true });
 
     try {
-        const response = await fetch(buildUraUrl(config), {
+        const response = await fetch(buildUraUrl(caminho ? { ...config, path: caminho } : config), {
             method: "POST",
             headers: {
                 Accept: "application/json",
@@ -727,4 +729,20 @@ export const getCustomerDetails = async (customerId, { signal, fallbackCustomer 
     setCache(customerCache, cacheKey, customer, getCacheTtlMs());
     setCache(customerCache, `detail:${cacheKey}`, result, getCacheTtlMs());
     return result;
+};
+
+/** Consulta crua à URA do SGP por campos livres (ex.: { telefone }). Devolve os contratos do retorno. */
+export const consultarContratosUra = async (campos, { signal } = {}) => {
+    const availability = buildAvailability();
+    if (!availability.available) throw new IntegrationUnavailableError(availability.message, availability);
+    const payload = await fetchUraJson(campos, { signal });
+    return extractUraContracts(payload);
+};
+
+/** Chamados (ocorrências) de um contrato no SGP, do jeito que o SGP devolve. Contratos com muitos chamados demoram: limite maior. */
+export const listarOcorrenciasUra = async (contrato, { signal } = {}) => {
+    const availability = buildAvailability();
+    if (!availability.available) throw new IntegrationUnavailableError(availability.message, availability);
+    const payload = await fetchUraJson({ contrato }, { signal, caminho: "/api/ura/ocorrencia/list/", timeoutMs: 20_000 });
+    return Array.isArray(payload?.ocorrencias) ? payload.ocorrencias : [];
 };

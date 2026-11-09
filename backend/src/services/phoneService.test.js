@@ -1,3 +1,4 @@
+import { extensaoDeDiscagem } from "./phoneService.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -55,4 +56,15 @@ test("valida o registro de chamada", () => {
   for (const ruim of [{ direcao: "x" }, { direcao: "in", numero: "1;DROP", resultado: "atendida" }, { direcao: "in", numero: "1", resultado: "?" },
     { direcao: "in", numero: "1", resultado: "falhou", inicioMs: 1 }])
     assert.throws(() => validarChamada(ruim), (e) => e.status === 400);
+});
+
+test("ramal da conta SIP vira o número curto que a central reconhece", () => {
+    assert.equal(extensaoDeDiscagem("7781010"), "1010");
+    assert.equal(extensaoDeDiscagem("7781003"), "1003");
+    assert.equal(extensaoDeDiscagem("1003"), "1003"); // já é curto
+    assert.equal(extensaoDeDiscagem("778"), "778"); // sobraria nada
+    assert.equal(extensaoDeDiscagem("77812"), "77812"); // sobrariam só 2 dígitos
+    assert.equal(extensaoDeDiscagem("7781010", ""), "7781010"); // prefixo desligado
+    assert.equal(extensaoDeDiscagem("9991010", "999"), "1010"); // outro prefixo
+    assert.equal(extensaoDeDiscagem("abc"), "abc");
 });

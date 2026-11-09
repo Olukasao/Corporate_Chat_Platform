@@ -12,6 +12,12 @@ import fs from 'fs';
 import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import db from './db/db.js';
+import { iniciarAvaliacoesNovas, SALA_AVALIACOES } from './services/avaliacoesSiteService.js';
+import { usuarioTemModulo } from './services/funcoesService.js';
+import { servicoSituacao } from './services/situacaoService.js';
+import { iniciarRegistroMassivos } from './services/massivosHistoricoService.js';
+import { iniciarRelatorioSemanal } from './services/relatorioSemanalService.js';
+import { iniciarIndiceTelefones } from './services/indiceTelefonesService.js';
 import route from "./Routes/Routes.js";
 import { getDiagnosticRunByRunId } from './repositories/networkDiagnosticsRepository.js';
 import { userHasNetworkDiagnosticPermission } from './services/networkDiagnosticPermissionsService.js';
@@ -343,8 +349,18 @@ const autorizador = criarAutorizadorSocket(db);
 
 // Situação da agenda de técnicos para o card da home (evento agenda-tecnicos:resumo).
 iniciarAgendaTecnicosResumo(io);
-iniciarBriefing(io);
-iniciarLembretes(io);
+// Ambiente de TESTES (AMBIENTE_TESTE=1): não gasta IA nem dispara alarmes; o resto é só leitura.
+const AMBIENTE_TESTE = String(process.env.AMBIENTE_TESTE || '') === '1';
+if (AMBIENTE_TESTE) {
+    console.log('[TESTE] Ambiente de testes: briefing da IA e alarmes de lembretes desligados.');
+} else {
+    iniciarBriefing(io);
+    iniciarLembretes(io);
+    iniciarRelatorioSemanal(io);
+    iniciarIndiceTelefones(); // exportação noturna de telefones do SGP (só números) para achar o DDD de números discados sem DDD
+}
+// Histórico de massivos (para o relatório semanal): guarda um retrato a cada 5 minutos enquanto houver massivo.
+iniciarRegistroMassivos();
 dashboardRelay.start();
 
 // Incidentes de rede da OLT Cloud: quem tem acesso à rede entra na sala "olt_watchers" e recebe o aviso de novos incidentes.
@@ -361,6 +377,8 @@ iniciarMonitorOlt({
 
 // Contratações pendentes do site (eventos contratacoes:resumo e contratacoes:novo).
 iniciarContratacoesPendentes(io);
+// Avaliações novas do atendimento (evento avaliacoes:nova) para quem tem a área Chamados.
+iniciarAvaliacoesNovas(io);
 
 // Mapa de usuários conectados e suas abas/dispositivos ativos
 const usuariosConectados = new Map();
@@ -952,6 +970,10 @@ const entrarSalasDoUsuario = async (socket, { usuarioId, empresaId, motivo = 'sy
     socket.join(`user_${usuarioKey}`);
     socket.join(`empresa_${empresaKey}`);
     socket.join(SALA_CONTRATACOES);
+    try {
+        const [pessoa] = await db.query('SELECT id, perfil, setor_id, empresa_id FROM usuarios WHERE id = ? AND deletado_em IS NULL', [usuarioKey]);
+        if (pessoa[0] && await usuarioTemModulo(pessoa[0], 'chamados')) socket.join(SALA_AVALIACOES);
+    } catch (e) { console.error('Avaliações: não foi possível entrar na sala:', e?.message); }
     socket.emit('contratacoes:resumo', obterResumoContratacoes());
 
     const [conversas] = await db.query(
@@ -1470,6 +1492,7 @@ io.on('connection', (socket) => {
         }
 
         if (presenca?.ficouOffline) {
+            servicoSituacao.marcarLigacao(presenca.empresaId, presenca.usuarioId, false).then((ef) => io.to(`empresa_${presenca.empresaId}`).emit('situacao_changed', { usuario_id: Number(presenca.usuarioId), situacao: ef.situacao, ate: ef.ate })).catch(() => {});
             try {
                 const ultimoAcesso = new Date();
 
