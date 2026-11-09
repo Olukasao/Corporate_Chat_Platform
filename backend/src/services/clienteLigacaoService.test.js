@@ -78,7 +78,7 @@ test("com o DDD informado pela pessoa, busca no SGP com o campo telefone", async
     const r = await s.porTelefone(1, "990211587", "11");
     assert.equal(r.encontrado, true);
     assert.equal(r.telefone, "11990211587");
-    assert.deepEqual(consultas, [{ telefone: "11990211587" }]);
+    assert.deepEqual(consultas.filter((c) => c.telefone), [{ telefone: "11990211587" }]);
     assert.equal((await s.porTelefone(1, "990211587", "ab")).semDdd, true); // DDD inválido não vale
 });
 
@@ -118,7 +118,7 @@ test("com DDD faz uma consulta só e o DDD informado é ignorado", async () => {
     assert.ok(faltaDdd("990211587") && faltaDdd("33331234"));
     assert.ok(!faltaDdd("11990211587") && !faltaDdd("(24) 99021-1587") && !faltaDdd("1003"));
     const so = [];
-    const sgp = sgpBase({ consultarContratosUra: async ({ telefone }) => { so.push(telefone); return []; } });
+    const sgp = sgpBase({ consultarContratosUra: async ({ telefone }) => { if (telefone) so.push(telefone); return []; } });
     assert.equal((await criarServicoClienteLigacao({ sgp, avaliacoes, banco: banco() }).porTelefone(1, "(11) 99021-1587", "24")).encontrado, false);
     assert.deepEqual(so, ["11990211587"]);
 });
@@ -128,7 +128,7 @@ const indiceFalso = (lista = []) => { const aprendidos = []; return { aprendidos
 test("sem DDD: o índice de telefones descobre o DDD (um candidato) e o número é aprendido", async () => {
     const indice = indiceFalso(["21990211587", "1133331234"]);
     const consultas = [];
-    const sgp = sgpBase({ consultarContratosUra: async ({ telefone }) => { consultas.push(telefone); return telefone === "21990211587" ? [{ contratoId: 5, clienteId: 5, telefones: ["21990211587"], contratoStatusDisplay: "Ativo" }] : []; } });
+    const sgp = sgpBase({ consultarContratosUra: async ({ telefone }) => { if (telefone) consultas.push(telefone); return telefone === "21990211587" ? [{ contratoId: 5, clienteId: 5, telefones: ["21990211587"], contratoStatusDisplay: "Ativo" }] : []; } });
     const r = await criarServicoClienteLigacao({ sgp, avaliacoes, banco: banco(), indice }).porTelefone(1, "990211587");
     assert.equal(r.encontrado, true);
     assert.equal(r.telefone, "21990211587");
@@ -146,4 +146,26 @@ test("sem DDD e com vários DDDs no índice: a pessoa escolhe; sem nenhum: pede 
     assert.equal(nenhum.candidatos, undefined);
     assert.equal(nenhum.semDdd, true);
     assert.equal(consultas.length, 0);
+});
+
+test("a ficha traz endereço, financeiro, histórico, média e conexão do contrato, sem senha da central", async () => {
+    const cadastro = { contratoId: 5, clienteId: 5, telefones: [{ contato: "21990211587" }], contratoStatusDisplay: "Ativo", endereco_logradouro: "RUA A", endereco_numero: "10", endereco_cidade: "FRANCO", contratoValorAberto: 99.5, contratoTitulosAReceber: 1, contratoCentralSenha: "segredo123", dataCadastro: "25/08/2026 10:49:12" };
+    const sgp = sgpBase({ consultarContratosUra: async () => [cadastro] });
+    const olt = { configurada: () => true, equipamentosDoContrato: async () => [{ external_client_contract_id: "5", status: "Online", device_rx: -21 }, { external_client_contract_id: "55", status: "Offline" }] };
+    const r = await criarServicoClienteLigacao({ sgp, avaliacoes, banco: banco(), olt }).porTelefone(1, "21990211587");
+    const c = r.cliente;
+    assert.equal(c.endereco.linha, "RUA A, 10");
+    assert.equal(c.financeiro.emAberto, 99.5);
+    assert.equal(c.clienteDesde, "2026-08-25");
+    assert.equal(c.historico.abertos, 1);
+    assert.equal(c.conexao.online, true);
+    assert.ok(!JSON.stringify(r).includes("segredo123"));
+});
+
+test("OLT Cloud fora do ar não derruba a ficha: conexão fica de fora", async () => {
+    const sgp = sgpBase({ consultarContratosUra: async () => [{ contratoId: 5, clienteId: 5, telefones: [{ contato: "21990211587" }], contratoStatusDisplay: "Ativo" }] });
+    const olt = { configurada: () => true, equipamentosDoContrato: async () => { throw new Error("fora"); } };
+    const r = await criarServicoClienteLigacao({ sgp, avaliacoes, banco: banco(), olt }).porTelefone(1, "21990211587");
+    assert.equal(r.encontrado, true);
+    assert.equal(r.cliente.conexao, undefined);
 });

@@ -258,6 +258,14 @@ const slotEPon = (incidente) => {
     return { slot: slot || "", pon: pon || incidente.pon || "" };
 };
 
+/** Equipamentos cadastrados para um contrato (a OLT Cloud filtra por "contém": quem chama confere o contrato exato). */
+export const equipamentosDoContrato = async (contrato) => {
+    const id = String(contrato ?? "").replace(/\D/g, "").slice(0, 20);
+    if (!id) return [];
+    const resposta = await get(`/api/v2/ftth/equipment/list?${parametros({ external_client_contract_id: id, page_size: 50 })}`);
+    return listaDe(resposta, ["data", "equipment", "items", "results"]);
+};
+
 /** Equipamentos afetados (sem energia / LOSS) de uma PON; nunca os online. */
 export const listarEquipamentosOffline = async (incidente) => {
     const { slot, pon } = slotEPon(incidente);

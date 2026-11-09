@@ -2,12 +2,15 @@
 // chamados e a última avaliação. O SGP que usamos consulta por contrato/CPF; a ligação número -> contrato vem de:
 //  1) vínculos já aprendidos (tabela telefone_cliente, criada na primeira vez que alguém vincula);
 //  2) uma tentativa no SGP por celular/telefone, aceita SÓ se o telefone do cadastro bater com o número.
+import { analisarChamados, conexaoDoContrato, dadosDoCadastro, mediaDeAvaliacoes } from "./fichaClienteDados.js";
+import { equipamentosDoContrato, oltCloudConfigurada } from "./oltCloudService.js";
 import db from "../db/db.js";
 import { consultarContratosUra, getCustomerDetails, listarOcorrenciasUra } from "./sgpCustomerService.js";
 import { criarServicoAvaliacoes } from "./avaliacoesSiteService.js";
 import { indiceTelefones, parteLocal } from "./indiceTelefonesService.js";
 
-const CACHE_MS = 5 * 60_000;
+// Curto de propósito: um chamado aberto agora há pouco tem que aparecer na ficha da próxima ligação.
+const CACHE_MS = 20_000;
 const SEM_CACHE_MS = 60_000;
 
 /** Telefone brasileiro com DDD (10 ou 11 dígitos); null para ramal, curto demais, lixo ou número sem DDD (o DDD nunca é presumido). */
@@ -87,6 +90,7 @@ const resumoOcorrencia = (o) => ({
 
 export function criarServicoClienteLigacao({
     sgp = { consultarContratosUra, getCustomerDetails, listarOcorrenciasUra },
+    olt = { configurada: oltCloudConfigurada, equipamentosDoContrato },
     avaliacoes = criarServicoAvaliacoes(),
     indice = indiceTelefones,
     agora = () => Date.now(),
@@ -117,9 +121,12 @@ export function criarServicoClienteLigacao({
 
     async function resumoDoCliente(contratos, situacaoSgp = "") {
         const [principal] = contratos;
-        const [detalhe, nota, ...ocorr] = await Promise.allSettled([
+        const comLimite = (promessa, limiteMs) => Promise.race([promessa, new Promise((_, no) => setTimeout(() => no(new Error("tempo esgotado")), limiteMs).unref?.())]);
+        const [detalhe, nota, cadastro, equip, ...ocorr] = await Promise.allSettled([
             sgp.getCustomerDetails(principal),
             avaliacoes.listar("365d"),
+            sgp.consultarContratosUra({ contrato: principal }),
+            olt.configurada() ? comLimite(olt.equipamentosDoContrato(principal), 4000) : Promise.resolve([]),
             ...contratos.slice(0, 3).map((c) => sgp.listarOcorrenciasUra(c)),
         ]);
         const c = detalhe.status === "fulfilled" ? detalhe.value.customer : null;
@@ -128,7 +135,13 @@ export function criarServicoClienteLigacao({
         const ultimas = todas ? [...todas].sort((a, b) => String(b.data_cadastro).localeCompare(String(a.data_cadastro)) || Number(b.id) - Number(a.id)).slice(0, 5).map(resumoOcorrencia) : null;
         const meus = new Set(contratos.map(String));
         const avaliacao = nota.status === "fulfilled" ? (nota.value.itens.find((i) => meus.has(String(i.contrato))) ?? null) : undefined;
+        const bruto = cadastro.status === "fulfilled" ? (cadastro.value || []).find((x) => String(x.contratoId ?? x.contrato ?? x.id ?? "") === String(principal)) : null;
+        const minhasNotas = nota.status === "fulfilled" ? nota.value.itens.filter((i) => meus.has(String(i.contrato))) : null;
         return {
+            ...dadosDoCadastro(bruto),
+            historico: analisarChamados(todas, agora()),
+            mediaAvaliacoes: minhasNotas ? mediaDeAvaliacoes(minhasNotas) : undefined,
+            conexao: equip.status === "fulfilled" ? conexaoDoContrato(equip.value, principal) : undefined,
             contrato: String(principal),
             contratos: contratos.map(String),
             nome: c?.name || "",
