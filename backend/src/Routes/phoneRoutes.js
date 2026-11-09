@@ -4,7 +4,7 @@ import db from "../db/db.js";
 import authMiddleware from "../middlewares/middleware.js";
 import { criarLimitador } from "../services/assistenteIa.js";
 import {
-  auditar, cifrarSenha, decifrarSenha, garantirSchemaPhone, publica, telefoniaConfigurada, validarChamada, validarConta, extensaoDeDiscagem,
+  auditar, cifrarSenha, decifrarSenha, garantirSchemaPhone, publica, telefoniaConfigurada, validarChamada, validarConta, validarTransferencia, extensaoDeDiscagem,
 } from "../services/phoneService.js";
 
 const idValido = (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
@@ -65,6 +65,24 @@ router.get("/diretorio", async (req, res) => {
        WHERE p.empresa_id = ? AND p.ativo = 1 AND u.deletado_em IS NULL ORDER BY u.nome ASC LIMIT 1000`, [req.user.empresa_id]);
     res.json({ ramais: linhas.map((l) => ({ usuarioId: l.usuario_id, nome: l.nome, ramal: extensaoDeDiscagem(l.ramal) })) });
   } catch (e) { falha(res, e, "Não foi possível carregar os ramais."); }
+});
+
+// Quem transfere um cliente avisa o ramal de destino: a ficha abre lá com o cliente de verdade (a central só manda "asterisk").
+const limiteTransferencia = criarLimitador({ max: 60 });
+router.post("/transferencia", async (req, res) => {
+  if (!limiteTransferencia(`${req.user.empresa_id}:${req.user.id}`).ok) return res.status(429).json({ error: "Muitas transferências seguidas." });
+  try {
+    const t = validarTransferencia(req.body);
+    await garantirSchemaPhone();
+    const [contas] = await db.query(
+      `SELECT p.usuario_id FROM phone_accounts p JOIN usuarios u ON u.id = p.usuario_id
+       WHERE p.empresa_id = ? AND p.ativo = 1 AND u.deletado_em IS NULL AND p.ramal IN (${t.ramais.map(() => "?").join(",")}) LIMIT 1`,
+      [req.user.empresa_id, ...t.ramais]);
+    // Destino que não é uma pessoa (fila, por exemplo): não há ficha para abrir, e tudo bem.
+    if (!contas.length) return res.json({ ok: true, avisou: false });
+    req.app?.get?.("io")?.to(`user_${contas[0].usuario_id}`).emit("phone:transferida", { numero: t.numero, de: String(req.user.nome || "").slice(0, 80), em: Date.now() });
+    res.json({ ok: true, avisou: true });
+  } catch (e) { falha(res, e, "Não foi possível avisar a transferência."); }
 });
 
 router.post("/chamadas", async (req, res) => {

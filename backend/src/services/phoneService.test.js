@@ -68,3 +68,12 @@ test("ramal da conta SIP vira o número curto que a central reconhece", () => {
     assert.equal(extensaoDeDiscagem("9991010", "999"), "1010"); // outro prefixo
     assert.equal(extensaoDeDiscagem("abc"), "abc");
 });
+
+test("transferência: valida o cliente e devolve o ramal nas duas formas", async () => {
+  const { validarTransferencia } = await import("./phoneService.js");
+  assert.deepEqual(validarTransferencia({ numero: "(11) 99021-1587", destino: "1010" }, "778"), { numero: "11990211587", ramais: ["1010", "7781010"] });
+  assert.deepEqual(validarTransferencia({ numero: "11990211587", destino: "7781010" }, "778").ramais, ["1010", "7781010"]);
+  assert.throws(() => validarTransferencia({ numero: "123", destino: "1010" }), /Número do cliente/);
+  assert.throws(() => validarTransferencia({ numero: "11990211587", destino: "1" }), /Ramal de destino/);
+  assert.throws(() => validarTransferencia(null), /inválido/);
+});
