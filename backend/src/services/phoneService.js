@@ -65,14 +65,14 @@ export function validarConta(entrada, { senhaObrigatoria = true } = {}) {
 }
 
 /**
- * Aviso de transferência: quem transfere diz qual cliente (número externo) vai para qual ramal, para a ficha abrir no destino.
+ * Aviso de transferência: quem transfere diz quem está na linha (cliente ou ramal de colega) e para qual ramal vai, para a ficha abrir no destino.
  * Devolve o número do cliente só com dígitos e as duas formas do ramal de destino (curta e com prefixo da central).
  */
 export function validarTransferencia(entrada, prefixo = process.env.PHONE_PREFIXO_RAMAL ?? "778") {
   const erro = (m) => Object.assign(new Error(m), { status: 400 });
   const e = entrada && typeof entrada === "object" ? entrada : {};
   const numero = String(e.numero ?? "").replace(/\D/g, "");
-  if (numero.length < 10 || numero.length > 15) throw erro("Número do cliente inválido.");
+  if (numero.length < 2 || numero.length > 15) throw erro("Número inválido.");
   const destino = String(e.destino ?? "").replace(/\D/g, "");
   if (destino.length < 2 || destino.length > 10) throw erro("Ramal de destino inválido.");
   const p = String(prefixo ?? "").trim();

@@ -73,7 +73,8 @@ test("transferência: valida o cliente e devolve o ramal nas duas formas", async
   const { validarTransferencia } = await import("./phoneService.js");
   assert.deepEqual(validarTransferencia({ numero: "(11) 99021-1587", destino: "1010" }, "778"), { numero: "11990211587", ramais: ["1010", "7781010"] });
   assert.deepEqual(validarTransferencia({ numero: "11990211587", destino: "7781010" }, "778").ramais, ["1010", "7781010"]);
-  assert.throws(() => validarTransferencia({ numero: "123", destino: "1010" }), /Número do cliente/);
+  assert.equal(validarTransferencia({ numero: "7781010", destino: "1020" }, "778").numero, "7781010"); // colega
+  assert.throws(() => validarTransferencia({ numero: "1", destino: "1010" }), /Número inválido/);
   assert.throws(() => validarTransferencia({ numero: "11990211587", destino: "1" }), /Ramal de destino/);
   assert.throws(() => validarTransferencia(null), /inválido/);
 });
