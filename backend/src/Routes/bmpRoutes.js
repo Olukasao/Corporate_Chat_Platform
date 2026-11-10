@@ -57,4 +57,37 @@ router.get(
     })
 );
 
+const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+const CIDR = /^[0-9a-fA-F:.]{2,45}\/\d{1,3}$/;
+const CURSOR = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?_\d+$/;
+
+// Histórico de anúncios/retiradas, com filtro por prefixo, ASN e período. Cursor opaco para "carregar mais".
+router.get(
+    "/integrations/bmp/historico",
+    authMiddleware,
+    exigirPermissao,
+    repassar((req) => {
+        const { prefix, asn, start, end, before } = req.query;
+        const p = new URLSearchParams({ limit: "100" });
+        if (prefix) { if (!CIDR.test(String(prefix))) return ""; p.set("prefix", String(prefix)); }
+        if (asn) { const n = String(asn).replace(/^AS/i, ""); if (!/^\d{1,10}$/.test(n)) return ""; p.set("asn", n); }
+        if (start) { if (!ISO.test(String(start))) return ""; p.set("start", String(start)); }
+        if (end) { if (!ISO.test(String(end))) return ""; p.set("end", String(end)); }
+        if (before) { if (!CURSOR.test(String(before))) return ""; p.set("before", String(before)); }
+        return `/bgp/history?${p.toString()}`;
+    })
+);
+
+// Como um prefixo estava numa data/hora (máquina do tempo).
+router.get(
+    "/integrations/bmp/estado",
+    authMiddleware,
+    exigirPermissao,
+    repassar((req) => {
+        const { prefix, ts } = req.query;
+        if (!CIDR.test(String(prefix ?? "")) || !ISO.test(String(ts ?? ""))) return "";
+        return `/bgp/prefix/${encodeURIComponent(String(prefix))}/at?ts=${encodeURIComponent(String(ts))}`;
+    })
+);
+
 export default router;
