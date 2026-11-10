@@ -25,6 +25,7 @@ import { obterResumoAgendaTecnicos } from "../services/agendaTecnicosResumoServi
 import purchaseModuleRoutes, { userHasPurchasePermission } from "./purchaseModule.js";
 import networkDiagnosticsRoutes from "./networkDiagnosticsRoutes.js";
 import oltRoutes from "./oltRoutes.js";
+import bmpRoutes from "./bmpRoutes.js";
 import rouletteRoutes from "./rouletteRoutes.js";
 import cursosRoutes from "./cursosRoutes.js";
 import lembretesRoutes from "./lembretesRoutes.js";
@@ -18105,6 +18106,7 @@ route.use("/presenca", presencaRoutes);
 route.use("/navegador", navegadorRoutes);
 route.use(networkDiagnosticsRoutes);
 route.use(oltRoutes);
+route.use(bmpRoutes);
 route.use(purchaseModuleRoutes);
 route.use("/roulette", rouletteRoutes);
 
