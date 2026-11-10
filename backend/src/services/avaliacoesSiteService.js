@@ -23,6 +23,7 @@ export function montarRelatorio(itens) {
             assunto: texto(i?.ticketTitle, 160),
             tecnico: texto(i?.technician, 120),
             contrato: texto(i?.contractId, 40),
+            cliente: texto(i?.customerName, 120),
         }))
         .filter((i) => Number.isInteger(i.nota) && i.nota >= 1 && i.nota <= 5)
         .sort((a, b) => b.respondidoEm.localeCompare(a.respondidoEm));

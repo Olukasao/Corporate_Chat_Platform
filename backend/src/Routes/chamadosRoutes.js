@@ -65,7 +65,7 @@ export function criarRotasChamados({ auth = authMiddleware, servico = criarServi
             const sala = `empresa_${req.user.empresa_id}`;
             const sockets = io ? await io.in(sala).fetchSockets() : [];
             const pessoas = new Set(sockets.map((s) => String(s.data?.usuarioId ?? s.data?.userId ?? s.id)));
-            io?.to(sala).emit("avaliacoes:notificada", { item: { protocolo: alvo.protocolo, nota: alvo.nota, comentario: alvo.comentario, tecnico: alvo.tecnico, assunto: alvo.assunto, respondidoEm: alvo.respondidoEm }, por: req.user.nome || "" });
+            io?.to(sala).emit("avaliacoes:notificada", { item: { protocolo: alvo.protocolo, nota: alvo.nota, comentario: alvo.comentario, tecnico: alvo.tecnico, cliente: alvo.cliente, assunto: alvo.assunto, respondidoEm: alvo.respondidoEm }, por: req.user.nome || "" });
             ultimaNotificacao.set(chave, Date.now());
             if (ultimaNotificacao.size > 200) ultimaNotificacao.clear();
             res.json({ ok: true, alcancados: pessoas.size });
