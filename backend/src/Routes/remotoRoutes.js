@@ -15,6 +15,8 @@ const chave = (req) => `${req.user.empresa_id}:${req.user.id}`;
 
 // Só memória: o app volta a avisar a cada 60 s, então a lista se refaz sozinha depois de reiniciar o servidor.
 const dispositivos = new Map();
+// Computadores com o Workspace aberto em que o suporte remoto NÃO conseguiu iniciar (e o motivo). Sem isso, a pessoa sumia da lista.
+const falhas = new Map();
 const pedidos = [];
 
 let esquemaPronto = null;
@@ -37,6 +39,15 @@ router.post("/registro", (req, res) => {
   if (!ID_REMOTO.test(id)) return res.status(400).json({ error: "ID inválido." });
   const computador = String(req.body?.computador ?? "").replace(/[^\w .-]/g, "").slice(0, 40);
   dispositivos.set(chave(req), { id, computador, em: Date.now() });
+  res.json({ ok: true });
+});
+
+router.post("/falha", (req, res) => {
+  if (!limite(chave(req)).ok) return res.status(429).json({ error: "Muitos avisos seguidos." });
+  const erro = String(req.body?.erro ?? "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 200) || "O suporte remoto não iniciou neste computador.";
+  const computador = String(req.body?.computador ?? "").replace(/[^\w .-]/g, "").slice(0, 40);
+  falhas.set(chave(req), { erro, computador, em: Date.now() });
+  if (falhas.size > 5000) falhas.clear();
   res.json({ ok: true });
 });
 
@@ -68,8 +79,10 @@ export function criarRemotoAdminRoutes({ requireAdmin }) {
       const agora = Date.now();
       const lista = pessoas.map((p) => {
         const d = dispositivos.get(`${empresa}:${p.id}`);
-        return { usuarioId: p.id, nome: p.nome, computador: d?.computador ?? "", online: !!d && agora - d.em < VALIDO_MS, registrado: d ? estaRegistrado(d.id) : null, visto: d ? new Date(d.em).toISOString() : null, temId: !!d };
-      }).filter((p) => p.temId);
+        const f = falhas.get(`${empresa}:${p.id}`);
+        const falhou = !d && !!f && agora - f.em < VALIDO_MS ? f : null;
+        return { usuarioId: p.id, nome: p.nome, computador: d?.computador ?? falhou?.computador ?? "", online: (!!d && agora - d.em < VALIDO_MS) || !!falhou, registrado: d ? estaRegistrado(d.id) : falhou ? false : null, visto: d ? new Date(d.em).toISOString() : falhou ? new Date(falhou.em).toISOString() : null, temId: !!d, falha: falhou?.erro ?? null };
+      }).filter((p) => p.temId || p.falha);
       await garantirEsquema();
       const [auditoria] = await db.query(
         `SELECT a.criado_em, adm.nome AS admin, COALESCE(alvo.nome, 'Desconhecido') AS alvo, a.modo FROM remoto_auditoria a
@@ -89,7 +102,11 @@ export function criarRemotoAdminRoutes({ requireAdmin }) {
       const alvo = Number(req.body?.usuarioId);
       if (!Number.isInteger(alvo) || alvo <= 0) return res.status(400).json({ error: "Pessoa inválida." });
       const d = dispositivos.get(`${req.user.empresa_id}:${alvo}`);
-      if (!d || Date.now() - d.em >= VALIDO_MS) return res.status(409).json({ error: "Essa pessoa está sem o Workspace aberto agora." });
+      if (!d || Date.now() - d.em >= VALIDO_MS) {
+        const f = falhas.get(`${req.user.empresa_id}:${alvo}`);
+        if (f && Date.now() - f.em < VALIDO_MS) return res.status(409).json({ error: `O suporte remoto não iniciou no computador dessa pessoa: ${f.erro}` });
+        return res.status(409).json({ error: "Essa pessoa está sem o Workspace aberto agora." });
+      }
       // Computador que nunca falou com o servidor de suporte: o RustDesk só responderia "computador remoto offline".
       if (estaRegistrado(d.id) === false) return res.status(409).json({ error: "O suporte remoto deste computador ainda não conectou ao servidor. Peça para a pessoa fechar o Workspace pela bandeja e abrir de novo; ele tenta se consertar sozinho em alguns minutos." });
       await garantirEsquema();
