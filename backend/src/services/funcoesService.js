@@ -14,6 +14,7 @@ export const MODULOS = [
     { id: "rede", rotulo: "Rede (OLT)", grupo: "Operação" },
     { id: "tools", rotulo: "Ferramentas", grupo: "Operação" },
     { id: "terminal", rotulo: "Terminal", grupo: "Operação" },
+    { id: "atendimento", rotulo: "Atendimento (chat com clientes)", grupo: "Operação" },
     { id: "navegador", rotulo: "Navegador", grupo: "Operação" },
     { id: "suporte", rotulo: "Suporte T.I.", grupo: "Operação" },
     { id: "cursos", rotulo: "Cursos", grupo: "Conteúdo" },
