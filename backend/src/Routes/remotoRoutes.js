@@ -6,6 +6,7 @@ import { Router } from "express";
 import db from "../db/db.js";
 import authMiddleware from "../middlewares/middleware.js";
 import { criarLimitador } from "../services/assistenteIa.js";
+import { estaRegistrado } from "../services/remotoRegistro.js";
 
 const falha = (res, e, padrao) => { console.error("[remoto]", e?.message); return res.status(500).json({ error: padrao }); };
 const ID_REMOTO = /^[0-9]{6,12}$/;
@@ -39,6 +40,12 @@ router.post("/registro", (req, res) => {
   res.json({ ok: true });
 });
 
+// O próprio app consulta se o suporte remoto deste computador já se registrou no servidor (e se conserta sozinho se não).
+router.get("/estado", (req, res) => {
+  const d = dispositivos.get(chave(req));
+  res.json({ id: d?.id ?? null, registrado: d ? estaRegistrado(d.id) : null });
+});
+
 router.post("/pedir", (req, res) => {
   if (!limitePedido(chave(req)).ok) return res.status(429).json({ error: "Aguarde um pouco antes de pedir de novo." });
   const mensagem = String(req.body?.mensagem ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
@@ -61,7 +68,7 @@ export function criarRemotoAdminRoutes({ requireAdmin }) {
       const agora = Date.now();
       const lista = pessoas.map((p) => {
         const d = dispositivos.get(`${empresa}:${p.id}`);
-        return { usuarioId: p.id, nome: p.nome, computador: d?.computador ?? "", online: !!d && agora - d.em < VALIDO_MS, visto: d ? new Date(d.em).toISOString() : null, temId: !!d };
+        return { usuarioId: p.id, nome: p.nome, computador: d?.computador ?? "", online: !!d && agora - d.em < VALIDO_MS, registrado: d ? estaRegistrado(d.id) : null, visto: d ? new Date(d.em).toISOString() : null, temId: !!d };
       }).filter((p) => p.temId);
       await garantirEsquema();
       const [auditoria] = await db.query(
@@ -83,6 +90,8 @@ export function criarRemotoAdminRoutes({ requireAdmin }) {
       if (!Number.isInteger(alvo) || alvo <= 0) return res.status(400).json({ error: "Pessoa inválida." });
       const d = dispositivos.get(`${req.user.empresa_id}:${alvo}`);
       if (!d || Date.now() - d.em >= VALIDO_MS) return res.status(409).json({ error: "Essa pessoa está sem o Workspace aberto agora." });
+      // Computador que nunca falou com o servidor de suporte: o RustDesk só responderia "computador remoto offline".
+      if (estaRegistrado(d.id) === false) return res.status(409).json({ error: "O suporte remoto deste computador ainda não conectou ao servidor. Peça para a pessoa fechar o Workspace pela bandeja e abrir de novo; ele tenta se consertar sozinho em alguns minutos." });
       await garantirEsquema();
       await db.query("INSERT INTO remoto_auditoria (empresa_id, admin_id, alvo_id, remoto_id, modo) VALUES (?, ?, ?, ?, 'pedido')", [req.user.empresa_id, req.user.id, alvo, d.id]);
       res.json({ id: d.id });
