@@ -169,3 +169,20 @@ test("OLT Cloud fora do ar não derruba a ficha: conexão fica de fora", async (
     assert.equal(r.encontrado, true);
     assert.equal(r.cliente.conexao, undefined);
 });
+
+test("ficha pelo contrato: traz cliente, chamados e avaliação sem precisar de telefone", async () => {
+    const s = criarServicoClienteLigacao({ sgp: sgpBase(), avaliacoes, banco: banco() });
+    const r = await s.porContrato(1, "3005");
+    assert.equal(r.encontrado, true);
+    assert.equal(r.cliente.contrato, "3005");
+    assert.equal(r.cliente.nome, "Maria");
+    assert.equal(r.cliente.chamados[0].protocolo, "A2");
+    assert.equal(r.cliente.ultimaAvaliacao.nota, 5);
+});
+
+test("ficha pelo contrato: contrato inválido é recusado e contrato sem dados não é encontrado", async () => {
+    const vazio = sgpBase({ getCustomerDetails: async () => ({ customer: null }), listarOcorrenciasUra: async () => [] });
+    const s = criarServicoClienteLigacao({ sgp: vazio, avaliacoes, banco: banco() });
+    await assert.rejects(() => s.porContrato(1, "abc"), /inválido/);
+    assert.equal((await s.porContrato(1, "999")).encontrado, false);
+});

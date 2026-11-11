@@ -19,6 +19,13 @@ export function criarRotasClienteLigacao({ auth = authMiddleware, servico = cria
         } catch (e) { falha(res, e, "Não foi possível consultar o cliente agora."); }
     });
 
+    router.get("/contrato/:contrato", async (req, res) => {
+        try {
+            res.setHeader("Cache-Control", "no-store");
+            res.json(await servico.porContrato(req.user.empresa_id, req.params.contrato));
+        } catch (e) { falha(res, e, "Não foi possível consultar o cliente agora."); }
+    });
+
     router.put("/vinculo", async (req, res) => {
         try {
             res.json(await servico.vincular(req.user.empresa_id, String(req.body?.numero || ""), String(req.body?.contrato || ""), req.user.id));

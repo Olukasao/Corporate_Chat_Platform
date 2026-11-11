@@ -187,6 +187,18 @@ export function criarServicoClienteLigacao({
             return guardar(chave, { valido: true, telefone: achado.telefone || telefone, encontrado: true, origem: achado.origem, outrosContratos: achado.varios || undefined, cliente: resumo }, CACHE_MS);
         },
 
+        /** Ficha completa pelo contrato (conversa do Atendimento, onde o contrato já é conhecido e não há telefone para buscar). */
+        async porContrato(empresaId, contrato) {
+            const alvo = String(contrato ?? "").replace(/\D/g, "").slice(0, 20);
+            if (!alvo) { const e = new Error("Contrato inválido."); e.status = 400; throw e; }
+            const chave = `${empresaId}:contrato:${alvo}`;
+            const guardado = lembrar(chave);
+            if (guardado) return guardado;
+            const resumo = await resumoDoCliente([alvo]);
+            if (!resumo.nome && !resumo.plano) return guardar(chave, { valido: true, encontrado: false }, SEM_CACHE_MS);
+            return guardar(chave, { valido: true, encontrado: true, origem: "contrato", cliente: resumo }, CACHE_MS);
+        },
+
         /** Liga o número a um contrato (e lembra para as próximas ligações). Confere que o contrato existe no SGP. */
         async vincular(empresaId, numero, contrato, usuarioId) {
             const telefone = normalizarTelefone(numero);
