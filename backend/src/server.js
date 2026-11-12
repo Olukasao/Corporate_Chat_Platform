@@ -18,6 +18,7 @@ import { servicoSituacao } from './services/situacaoService.js';
 import { iniciarRegistroMassivos } from './services/massivosHistoricoService.js';
 import { iniciarRelatorioSemanal } from './services/relatorioSemanalService.js';
 import { iniciarIndiceTelefones } from './services/indiceTelefonesService.js';
+import { limparAntigas, retomarFila } from './services/phoneTranscricaoService.js';
 import route from "./Routes/Routes.js";
 import { getDiagnosticRunByRunId } from './repositories/networkDiagnosticsRepository.js';
 import { userHasNetworkDiagnosticPermission } from './services/networkDiagnosticPermissionsService.js';
@@ -361,6 +362,9 @@ if (AMBIENTE_TESTE) {
 }
 // Histórico de massivos (para o relatório semanal): guarda um retrato a cada 5 minutos enquanto houver massivo.
 iniciarRegistroMassivos();
+// Transcrição das chamadas: retoma a fila que ficou pendente e apaga, uma vez por dia, o que passou do prazo de guarda.
+retomarFila(io);
+setInterval(() => { limparAntigas().catch((e) => console.error('[transcricao] limpeza:', e?.message)); }, 24 * 3600 * 1000).unref();
 dashboardRelay.start();
 
 // Incidentes de rede da OLT Cloud: quem tem acesso à rede entra na sala "olt_watchers" e recebe o aviso de novos incidentes.

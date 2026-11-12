@@ -1,11 +1,15 @@
 // Workscape Phone. Rotas do usuário em /api/phone; administração em /api/admin/phone (atrás de requireAdmin).
 import { Router } from "express";
+import multer from "multer";
 import db from "../db/db.js";
 import authMiddleware from "../middlewares/middleware.js";
 import { criarLimitador } from "../services/assistenteIa.js";
 import {
   auditar, cifrarSenha, decifrarSenha, garantirSchemaPhone, publica, telefoniaConfigurada, validarChamada, validarConta, validarTransferencia, extensaoDeDiscagem,
 } from "../services/phoneService.js";
+import {
+  MAX_ARQUIVO, garantirSchemaTranscricao, ligarAoHistorico, lerConfig, receberGravacao, salvarConfig, validarGravacao,
+} from "../services/phoneTranscricaoService.js";
 
 const idValido = (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 ? n : null; };
 const falha = (res, e, padrao) => {
@@ -92,6 +96,8 @@ router.post("/chamadas", async (req, res) => {
     const c = validarChamada(req.body);
     await db.query("INSERT INTO phone_calls (empresa_id, usuario_id, direcao, numero, resultado, duracao_seg, inicio) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [...dono(req), c.direcao, c.numero, c.resultado, c.duracaoSeg, c.inicio]);
+    // A gravação pode ter chegado antes desta linha: liga as duas (sem isso o histórico não mostraria a transcrição).
+    await garantirSchemaTranscricao().then(() => ligarAoHistorico({ empresaId: req.user.empresa_id, usuarioId: req.user.id, numero: c.numero, inicioMs: c.inicio.getTime() })).catch(() => {});
     res.status(201).json({ ok: true });
   } catch (e) { falha(res, e, "Não foi possível registrar a chamada."); }
 });
@@ -105,6 +111,51 @@ router.get("/chamadas", async (req, res) => {
   } catch (e) { falha(res, e, "Não foi possível carregar o histórico."); }
 });
 
+// ---- gravação e transcrição ------------------------------------------------------------------------
+const enviarAudio = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_ARQUIVO, files: 2, fields: 8 } })
+  .fields([{ name: "local", maxCount: 1 }, { name: "remoto", maxCount: 1 }]);
+const limiteGravacao = criarLimitador({ max: 120 });
+
+// O app pergunta antes de cada chamada se gravar está liberado (o administrador decide em Admin > Histórico de chamadas).
+router.get("/gravacao-config", async (req, res) => {
+  try { res.set("Cache-Control", "no-store"); res.json({ ativa: (await lerConfig(req.user.empresa_id)).ativa }); }
+  catch (e) { falha(res, e, "Não foi possível consultar a gravação."); }
+});
+
+router.post("/gravacoes", (req, res) => {
+  if (!limiteGravacao(`${req.user.empresa_id}:${req.user.id}`).ok) return res.status(429).json({ error: "Muitos envios seguidos." });
+  enviarAudio(req, res, async (erroUpload) => {
+    if (erroUpload) return res.status(erroUpload.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({ error: "Arquivo de áudio inválido ou grande demais." });
+    try {
+      const cfg = await lerConfig(req.user.empresa_id);
+      if (!cfg.ativa) return res.status(403).json({ error: "A gravação de chamadas está desligada." });
+      const dados = validarGravacao(req.body, req.files);
+      const id = await receberGravacao({ empresaId: req.user.empresa_id, usuarioId: req.user.id, dados, io: req.app?.get?.("io") });
+      res.status(201).json({ ok: true, id });
+    } catch (e) { falha(res, e, "Não foi possível receber a gravação."); }
+  });
+});
+
+const dig8 = (v) => String(v ?? "").replace(/\D/g, "").slice(-8);
+const publicaTrans = (l, detalhe = false) => ({
+  id: l.id, usuarioId: l.usuario_id, nome: l.nome ?? undefined, direcao: l.direcao, numero: l.numero, inicioMs: Number(l.inicio_ms), duracaoSeg: l.duracao_seg,
+  status: l.status, resumo: l.resumo, motivo: l.motivo, erro: l.status === "erro" ? l.erro : null,
+  ...(detalhe ? { falas: (() => { try { return JSON.parse(l.segmentos || "[]"); } catch { return []; } })() } : {}),
+});
+
+// As transcrições das próprias ligações da pessoa, por número do cliente (usado na conversa e na ficha do cliente).
+router.get("/transcricoes", async (req, res) => {
+  try {
+    await garantirSchemaTranscricao();
+    const final = dig8(req.query.numero);
+    if (final.length !== 8) return res.status(400).json({ error: "Informe o telefone do cliente." });
+    const [linhas] = await db.query(
+      `SELECT * FROM phone_gravacoes WHERE empresa_id = ? AND usuario_id = ? AND REPLACE(REPLACE(REPLACE(REPLACE(numero,'-',''),' ',''),'(',''),')','') LIKE ?
+       ORDER BY inicio_ms DESC LIMIT 20`, [...dono(req), `%${final}`]);
+    res.json({ transcricoes: linhas.map((l) => publicaTrans(l, true)) });
+  } catch (e) { falha(res, e, "Não foi possível carregar as transcrições."); }
+});
+
 export default router;
 
 /** Administração: cadastrar contas SIP, ligar a funcionários, desativar, ver histórico e auditoria. */
@@ -112,6 +163,22 @@ export function criarPhoneAdminRoutes({ requireAdmin }) {
   const admin = Router();
   admin.use(requireAdmin);
   const empresa = (req) => req.user.empresa_id;
+
+  // Estas rotas ficam antes das de "/:usuarioId", senão "gravacao-config" seria lido como número de pessoa.
+  admin.get("/gravacao-config", async (req, res) => {
+    try { res.json(await lerConfig(empresa(req))); } catch (e) { falha(res, e, "Não foi possível carregar a configuração."); }
+  });
+  admin.put("/gravacao-config", async (req, res) => {
+    try {
+      const dias = req.body?.dias === undefined ? undefined : Number(req.body.dias);
+      if (dias !== undefined && (!Number.isFinite(dias) || dias < 1 || dias > 3650)) return res.status(400).json({ error: "O prazo precisa ficar entre 1 e 3650 dias." });
+      if (req.body?.ativa !== undefined && typeof req.body.ativa !== "boolean") return res.status(400).json({ error: "Valor inválido." });
+      const cfg = await salvarConfig(empresa(req), { ativa: req.body?.ativa, dias });
+      await auditar({ empresaId: empresa(req), atorId: req.user.id, acao: "gravacao_config", detalhe: `${cfg.ativa ? "ligada" : "desligada"}, guarda ${cfg.dias} dias` });
+      res.json(cfg);
+    } catch (e) { falha(res, e, "Não foi possível salvar a configuração."); }
+  });
+
 
   admin.get("/", async (req, res) => {
     try {
@@ -223,6 +290,61 @@ export function criarPhoneAdminRoutes({ requireAdmin }) {
          WHERE a.empresa_id = ? ORDER BY a.id DESC LIMIT 100`, [empresa(req)]);
       res.json({ eventos: linhas });
     } catch (e) { falha(res, e, "Não foi possível carregar a auditoria."); }
+  });
+
+  // ---- histórico de chamadas com transcrição ----------------------------------------------------------
+  // Todas as chamadas registradas, com o estado da transcrição de cada uma. Filtros: pessoa, texto (busca na transcrição) e datas.
+  admin.get("/historico", async (req, res) => {
+    try {
+      await garantirSchemaTranscricao();
+      const alvo = req.query.usuarioId ? idValido(req.query.usuarioId) : null;
+      const busca = String(req.query.q ?? "").trim().slice(0, 80);
+      const de = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.de ?? "")) ? `${req.query.de} 00:00:00` : null;
+      const ate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.ate ?? "")) ? `${req.query.ate} 23:59:59` : null;
+      const onde = ["c.empresa_id = ?"]; const args = [empresa(req)];
+      if (alvo) { onde.push("c.usuario_id = ?"); args.push(alvo); }
+      if (de) { onde.push("c.inicio >= ?"); args.push(de); }
+      if (ate) { onde.push("c.inicio <= ?"); args.push(ate); }
+      if (busca) {
+        const like = `%${busca.replace(/[%_\\]/g, "\\$&")}%`;
+        onde.push("(c.numero LIKE ? OR u.nome LIKE ? OR g.segmentos LIKE ? OR g.resumo LIKE ?)"); args.push(like, like, like, like);
+      }
+      const [linhas] = await db.query(
+        `SELECT c.id AS chamada_id, c.usuario_id, u.nome, c.direcao, c.numero, c.resultado, c.duracao_seg AS duracao_chamada, c.inicio,
+                g.id AS grav_id, g.status, g.resumo, g.motivo
+         FROM phone_calls c JOIN usuarios u ON u.id = c.usuario_id
+         LEFT JOIN phone_gravacoes g ON g.call_id = c.id
+         WHERE ${onde.join(" AND ")} ORDER BY c.inicio DESC LIMIT 300`, args);
+      res.json({ chamadas: linhas.map((l) => ({
+        id: l.chamada_id, usuarioId: l.usuario_id, nome: l.nome, direcao: l.direcao, numero: l.numero, resultado: l.resultado,
+        duracaoSeg: l.duracao_chamada, inicio: l.inicio, transcricaoId: l.grav_id ?? null, transcricao: l.status ?? null, resumo: l.resumo ?? null, motivo: l.motivo ?? null,
+      })) });
+    } catch (e) { falha(res, e, "Não foi possível carregar o histórico."); }
+  });
+
+  admin.get("/transcricoes/:id", async (req, res) => {
+    try {
+      await garantirSchemaTranscricao();
+      const id = idValido(req.params.id);
+      if (!id) return res.status(400).json({ error: "Transcrição inválida." });
+      const [linhas] = await db.query("SELECT g.*, u.nome FROM phone_gravacoes g JOIN usuarios u ON u.id = g.usuario_id WHERE g.id = ? AND g.empresa_id = ?", [id, empresa(req)]);
+      if (!linhas[0]) return res.status(404).json({ error: "Transcrição não encontrada." });
+      // Ler o que o cliente falou é sensível: fica na auditoria de quem leu.
+      await auditar({ empresaId: empresa(req), atorId: req.user.id, acao: "transcricao_lida", alvoUsuarioId: linhas[0].usuario_id, detalhe: `transcrição ${id}` });
+      res.json(publicaTrans(linhas[0], true));
+    } catch (e) { falha(res, e, "Não foi possível carregar a transcrição."); }
+  });
+
+  admin.delete("/transcricoes/:id", async (req, res) => {
+    try {
+      await garantirSchemaTranscricao();
+      const id = idValido(req.params.id);
+      if (!id) return res.status(400).json({ error: "Transcrição inválida." });
+      const [r] = await db.query("DELETE FROM phone_gravacoes WHERE id = ? AND empresa_id = ? AND status NOT IN ('fila','transcrevendo')", [id, empresa(req)]);
+      if (!r.affectedRows) return res.status(404).json({ error: "Transcrição não encontrada ou ainda em andamento." });
+      await auditar({ empresaId: empresa(req), atorId: req.user.id, acao: "transcricao_excluida", detalhe: `transcrição ${id}` });
+      res.json({ ok: true });
+    } catch (e) { falha(res, e, "Não foi possível excluir a transcrição."); }
   });
 
   return admin;
