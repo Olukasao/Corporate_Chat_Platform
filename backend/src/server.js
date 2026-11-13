@@ -31,6 +31,7 @@ import { iniciarMonitorOlt } from './services/oltCloudService.js';
 import { usuarioPodeVerRedeOlt } from './Routes/oltRoutes.js';
 import { dashboardRelay } from './services/dashboardRelayService.js';
 import { registrarWorkspace, removerWorkspace } from './services/workspacePresenceService.js';
+import { agendarPresenca as agendarPresencaEscritorio, iniciarEscritorio } from './services/escritorioService.js';
 import { dispositivoValido, marcarSaida, registrarVisto } from './services/workspaceDispositivosService.js';
 import {
     iniciarContratacoesPendentes,
@@ -1124,6 +1125,7 @@ io.on('connection', (socket) => {
             }).catch((e) => console.error('[SOCKET] Não registrou o computador:', e.message));
             socket.data.workspaceEmpresaId = usuario.empresa_id;
             io.to(`empresa_${usuario.empresa_id}`).emit('workspace_presence_changed');
+            agendarPresencaEscritorio();
         } catch (err) {
             console.error('[SOCKET] Presença do Workspace recusada:', err.message);
         }
@@ -1489,6 +1491,7 @@ io.on('connection', (socket) => {
         const saiu = removerWorkspace(socket.id);
         if (saiu) {
             io.to(`empresa_${socket.data.workspaceEmpresaId}`).emit('workspace_presence_changed');
+            agendarPresencaEscritorio();
             if (saiu.dispositivo) {
                 marcarSaida({ empresaId: saiu.empresaId, usuarioId: saiu.usuarioId, dispositivo: saiu.dispositivo })
                     .catch((e) => console.error('[SOCKET] Não carimbou a saída do computador:', e.message));
@@ -2052,6 +2055,7 @@ const iniciarServidor = async () => {
 
     server.listen(PORT, HOST, () => {
         console.log(`🚀 Servidor Chat Interno rodando em http://${HOST}:${PORT}`);
+        iniciarEscritorio();
     });
 };
 

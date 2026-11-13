@@ -40,6 +40,7 @@ import { listarFuncoes, modulosDoUsuario, salvarFuncao } from "../services/funco
 import chamadosRoutes from "./chamadosRoutes.js";
 import clienteLigacaoRoutes from "./clienteLigacaoRoutes.js";
 import presencaRoutes from "./presencaRoutes.js";
+import escritorioRoutes from "./escritorioRoutes.js";
 import navegadorRoutes, { criarRotasNavegadorAdmin } from "./navegadorRoutes.js";
 import { criarServicoSaude } from "../services/saudeService.js";
 import { indiceTelefones } from "../services/indiceTelefonesService.js";
@@ -18106,6 +18107,7 @@ route.use("/ia", iaResumoRoutes);
 route.use("/chamados", chamadosRoutes);
 route.use("/clientes/ligacao", clienteLigacaoRoutes);
 route.use("/presenca", presencaRoutes);
+route.use("/escritorio", escritorioRoutes);
 route.use("/navegador", navegadorRoutes);
 route.use(networkDiagnosticsRoutes);
 route.use(oltRoutes);
