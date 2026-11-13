@@ -2,6 +2,7 @@
 import { Router } from "express";
 import authMiddleware from "../middlewares/middleware.js";
 import { servicoSituacao, SITUACOES } from "../services/situacaoService.js";
+import { agendarPresenca as avisarEscritorio } from "../services/escritorioService.js";
 
 export function criarRotasPresenca({ auth = authMiddleware, servico = servicoSituacao } = {}) {
     const router = Router();
@@ -12,6 +13,7 @@ export function criarRotasPresenca({ auth = authMiddleware, servico = servicoSit
         return res.status(500).json({ error: padrao });
     };
     const avisar = (req, usuarioId, ef) => {
+        avisarEscritorio();
         req.app?.get?.("io")?.to(`empresa_${req.user.empresa_id}`).emit("situacao_changed", { usuario_id: Number(usuarioId), situacao: ef.situacao, ate: ef.ate });
     };
 

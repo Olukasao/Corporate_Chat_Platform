@@ -5,6 +5,7 @@
 import { createHmac } from "node:crypto";
 import db from "../db/db.js";
 import { listarWorkspace } from "./workspacePresenceService.js";
+import { servicoSituacao } from "./situacaoService.js";
 
 const cfg = () => ({
     url: String(process.env.ESCRITORIO_URL || "").replace(/\/+$/, ""),
@@ -51,11 +52,24 @@ export async function enviarPresenca() {
     return enviar("workspace-presence", { companyId: COMPANY_ID, employeeIds: ids });
 }
 
+/** Quem está em ligação (situação "ligacao", alimentada pelo Workscape Phone): o boneco no mapa vira "em atendimento". */
+export async function enviarLigacoes() {
+    if (!escritorioAtivo()) return null;
+    const c = cfg();
+    const itens = await servicoSituacao.listar(c.empresaId);
+    const ids = itens.filter((i) => i.situacao === "ligacao").map((i) => employeeId(i.usuario_id));
+    return enviar("workspace-calls", { companyId: COMPANY_ID, employeeIds: ids });
+}
+
 let agendado = null;
 /** Chamado quando alguém abre ou fecha o Workspace: junta vários avisos seguidos num só. */
 export function agendarPresenca() {
     if (!escritorioAtivo() || agendado) return;
-    agendado = setTimeout(() => { agendado = null; enviarPresenca().catch((e) => console.error("[ESCRITORIO] presença:", e.message)); }, 800);
+    agendado = setTimeout(() => {
+        agendado = null;
+        enviarPresenca().catch((e) => console.error("[ESCRITORIO] presença:", e.message));
+        enviarLigacoes().catch((e) => console.error("[ESCRITORIO] ligações:", e.message));
+    }, 500);
     agendado.unref?.();
 }
 
@@ -64,7 +78,10 @@ export function iniciarEscritorio() {
     if (iniciado || !escritorioAtivo()) return;
     iniciado = true;
     const rodarDiretorio = () => sincronizarDiretorio().then((r) => r && console.log("[ESCRITORIO] diretório:", JSON.stringify(r))).catch((e) => console.error("[ESCRITORIO] diretório:", e.message));
-    const rodarPresenca = () => enviarPresenca().catch((e) => console.error("[ESCRITORIO] presença:", e.message));
+    const rodarPresenca = () => {
+        enviarPresenca().catch((e) => console.error("[ESCRITORIO] presença:", e.message));
+        enviarLigacoes().catch((e) => console.error("[ESCRITORIO] ligações:", e.message));
+    };
     // o diretório vai primeiro (cria a empresa no Escritório); a presença só depois
     setTimeout(() => rodarDiretorio().then(rodarPresenca), 3000).unref?.();
     setInterval(rodarDiretorio, 5 * 60_000).unref?.();
