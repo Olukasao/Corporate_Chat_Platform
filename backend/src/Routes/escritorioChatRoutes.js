@@ -4,7 +4,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import db from "../db/db.js";
-import { escritorioAtivo } from "../services/escritorioService.js";
+import { escritorioAtivo, avisarVisita } from "../services/escritorioService.js";
 
 const empresaId = () => Number(process.env.ESCRITORIO_EMPRESA_ID || 1);
 const igual = (a, b) => { const x = createHash("sha256").update(a).digest(), y = createHash("sha256").update(b).digest(); return timingSafeEqual(x, y); };
@@ -69,9 +69,108 @@ export function criarRotasEscritorioChat() {
             const msg = { id: r.insertId, remetente_id: de, usuario_id: para, conversa_id: conversaId, remetente_nome: remetente?.nome, remetente_avatar: remetente?.avatar ?? null,
                 mensagem: texto, tipo_mensagem: "texto", anexo_nome: null, anexo_mime: null, sticker_id: null, lida: false, entregue_em: null, lida_em: null, reacoes: [], criada_em: new Date() };
             io?.to(`conversa_${conversaId}`).emit("receive_direct_message", msg);
+            avisarVisita(de, para);
             io?.to(`user_${para}`).emit("new_direct_message_notification", { ...msg, preview: texto.slice(0, 120) });
             res.status(201).json({ id: r.insertId, criada_em: msg.criada_em });
         } catch (e) { console.error("[ESCRITORIO-CHAT] enviar:", e.message); res.status(500).json({ error: "Falha ao enviar a mensagem." }); }
+    });
+
+    // ---------- foto do perfil, ligação e transferência de atendimento (pelo cartão da pessoa no mapa) ----------
+    const usuario = async (uid) => {
+        if (!uid) return null;
+        const [r] = await db.query("SELECT id, nome, email FROM usuarios WHERE id = ? AND empresa_id = ? AND deletado_em IS NULL", [uid, empresaId()]);
+        return r[0] ?? null;
+    };
+
+    // A foto fica no banco como data URL; o mapa recebe a imagem de verdade (e só dela).
+    router.get("/foto", async (req, res) => {
+        try {
+            const uid = id(req.query.usuario);
+            if (!uid || !(await usuario(uid))) return res.status(404).end();
+            const [r] = await db.query("SELECT avatar FROM usuarios WHERE id = ?", [uid]);
+            const m = /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(String(r[0]?.avatar ?? ""));
+            if (!m) return res.status(404).end();
+            res.set({ "Content-Type": m[1], "Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff" });
+            res.send(Buffer.from(m[2], "base64"));
+        } catch (e) { console.error("[ESCRITORIO-CHAT] foto:", e.message); res.status(500).end(); }
+    });
+
+    // "Ligar": o Workspace de quem clicou recebe o ramal do colega e disca pelo Workscape Phone dele (o mapa não liga sozinho).
+    router.post("/ligar", async (req, res) => {
+        try {
+            const de = id(req.body?.de), para = id(req.body?.para);
+            const pessoas = await par(de, para);
+            if (!pessoas) return res.status(404).json({ error: "Pessoa não encontrada." });
+            const [ramal] = await db.query("SELECT ramal FROM phone_accounts WHERE empresa_id = ? AND usuario_id = ? AND ativo = 1 LIMIT 1", [empresaId(), para]);
+            const numero = String(ramal[0]?.ramal ?? "").replace(/\D/g, "");
+            if (!numero) return res.status(409).json({ error: "Essa pessoa não tem ramal ativo no Workscape Phone." });
+            const nome = pessoas.find((p) => p.id === para)?.nome;
+            const io = req.app.get("io");
+            const alcancados = io ? (await io.in(`user_${de}`).fetchSockets()).length : 0;
+            if (!alcancados) return res.status(409).json({ error: "Seu Workspace não está aberto para discar. Abra o Workspace e tente de novo." });
+            io.to(`user_${de}`).emit("escritorio_ligar", { numero, nome });
+            res.json({ ok: true, nome, ramal: numero });
+        } catch (e) { console.error("[ESCRITORIO-CHAT] ligar:", e.message); res.status(500).json({ error: "Falha ao pedir a ligação." }); }
+    });
+
+    // Transferência de atendimento: os atendimentos moram na chat-api; aqui só traduzimos a pessoa (id) para o e-mail do atendente.
+    const atendimento = async (caminho, { metodo = "GET", corpo, consulta } = {}) => {
+        const base = String(process.env.ATENDIMENTO_S2S_URL || "").replace(/\/+$/, "");
+        const token = process.env.ATENDIMENTO_S2S_TOKEN;
+        if (!base || !token) { const e = new Error("A ligação com o Atendimento está desligada."); e.status = 503; throw e; }
+        let r;
+        try {
+            r = await fetch(`${base}/api/office/${caminho}${consulta ? `?${new URLSearchParams(consulta)}` : ""}`, {
+                method: metodo, headers: { Authorization: `Bearer ${token}`, ...(corpo ? { "Content-Type": "application/json" } : {}) },
+                body: corpo ? JSON.stringify(corpo) : undefined, signal: AbortSignal.timeout(8000),
+            });
+        } catch { const e = new Error("O Atendimento não respondeu."); e.status = 503; throw e; }
+        const dados = await r.json().catch(() => ({}));
+        if (!r.ok) { const e = new Error(MENSAGENS_ATENDIMENTO[dados.error] || "O Atendimento recusou o pedido."); e.status = r.status === 403 ? 409 : r.status >= 500 ? 503 : r.status; throw e; }
+        return dados;
+    };
+    const MENSAGENS_ATENDIMENTO = {
+        agent_not_registered: "Essa pessoa não está cadastrada como atendente.",
+        target_is_self: "Escolha outra pessoa para receber.",
+        target_not_in_queue: "Essa pessoa está fora da fila de atendimento.",
+        no_active_ticket: "Esse atendimento não está mais com você.",
+        conversation_closed: "Esse atendimento já foi encerrado.",
+        ticket_changed: "O atendimento mudou desde que você abriu a tela. Atualize e tente de novo.",
+        conversation_not_found: "Atendimento não encontrado.",
+    };
+    const falha = (res, e, rotulo) => {
+        if (e.status) return res.status(e.status).json({ error: e.message });
+        console.error(`[ESCRITORIO-CHAT] ${rotulo}:`, e.message);
+        res.status(500).json({ error: "Falha na operação." });
+    };
+
+    router.get("/atendimentos", async (req, res) => {
+        try {
+            const u = await usuario(id(req.query.de));
+            if (!u) return res.status(404).json({ error: "Pessoa não encontrada." });
+            const d = await atendimento("agent-conversations", { consulta: { email: u.email } }).catch((e) => (e.message.includes("cadastrada") || e.status === 409 ? { conversations: [], naoAtendente: true } : Promise.reject(e)));
+            res.json({ tickets: d.conversations, naoAtendente: !!d.naoAtendente });
+        } catch (e) { falha(res, e, "atendimentos"); }
+    });
+
+    router.get("/pode-receber", async (req, res) => {
+        try {
+            const u = await usuario(id(req.query.para));
+            if (!u) return res.status(404).json({ error: "Pessoa não encontrada." });
+            const d = await atendimento("can-receive", { consulta: { email: u.email } });
+            res.json({ canReceive: !!d.canReceive });
+        } catch (e) { falha(res, e, "pode-receber"); }
+    });
+
+    router.post("/transferir", async (req, res) => {
+        try {
+            const de = await usuario(id(req.body?.de)), para = await usuario(id(req.body?.para));
+            const versao = Number(req.body?.expectedVersion);
+            if (!de || !para || de.id === para.id) return res.status(404).json({ error: "Pessoa não encontrada." });
+            if (!/^\d{1,12}$/.test(String(req.body?.conversationId ?? "")) || !Number.isInteger(versao)) return res.status(400).json({ error: "Pedido inválido." });
+            const d = await atendimento("transfer", { metodo: "POST", corpo: { email: de.email, targetEmail: para.email, conversationId: Number(req.body.conversationId), expectedVersion: versao } });
+            res.json(d);
+        } catch (e) { falha(res, e, "transferir"); }
     });
 
     return router;

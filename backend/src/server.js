@@ -31,7 +31,7 @@ import { iniciarMonitorOlt } from './services/oltCloudService.js';
 import { usuarioPodeVerRedeOlt } from './Routes/oltRoutes.js';
 import { dashboardRelay } from './services/dashboardRelayService.js';
 import { registrarWorkspace, removerWorkspace } from './services/workspacePresenceService.js';
-import { agendarPresenca as agendarPresencaEscritorio, iniciarEscritorio } from './services/escritorioService.js';
+import { agendarPresenca as agendarPresencaEscritorio, avisarVisita as avisarVisitaEscritorio, iniciarEscritorio } from './services/escritorioService.js';
 import { dispositivoValido, marcarSaida, registrarVisto } from './services/workspaceDispositivosService.js';
 import {
     iniciarContratacoesPendentes,
@@ -1639,6 +1639,9 @@ io.on('connection', (socket) => {
                 reacoes: [],
                 criada_em: criadaEm
             });
+
+            // Mapa do escritório: o boneco de quem escreveu vai até a mesa de quem recebeu (só o fato, nunca o conteúdo)
+            avisarVisitaEscritorio(remetente_id, usuario_id);
 
             // Notificar também na sala do usuário se ele não estiver na conversa
             io.to(`user_${usuario_id}`).emit('new_direct_message_notification', {

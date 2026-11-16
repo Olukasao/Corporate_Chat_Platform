@@ -96,3 +96,15 @@ export function criarBilhete(usuario) {
     const assinatura = createHmac("sha256", `office3d-sso:${c.token}`).update(corpo).digest("base64url");
     return { ticket: `${corpo}.${assinatura}`, url: `${c.publicUrl}/sso?ticket=${corpo}.${assinatura}`, origem: c.publicUrl };
 }
+
+/**
+ * Alguém mandou mensagem direta: o boneco de quem escreveu vai até a mesa de quem recebe (e volta depois).
+ * Vai só o fato e as duas pessoas, nunca o conteúdo. Falha ou demora aqui nunca atrapalha o envio da mensagem.
+ */
+export function avisarVisita(deId, paraId) {
+    if (!escritorioAtivo()) return;
+    const de = Number(deId), para = Number(paraId);
+    if (!Number.isInteger(de) || !Number.isInteger(para) || de === para || de <= 0 || para <= 0) return;
+    enviar("workspace-visit", { companyId: COMPANY_ID, fromRef: String(de), toRef: String(para) })
+        .catch((e) => console.error("[ESCRITORIO] visita:", e.message));
+}
