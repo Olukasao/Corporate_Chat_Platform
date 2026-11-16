@@ -13,6 +13,7 @@ import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import db from './db/db.js';
 import { iniciarAvaliacoesNovas, SALA_AVALIACOES } from './services/avaliacoesSiteService.js';
+import { iniciarTrocasWifi, SALA_WIFI_TROCAS } from './services/wifiTrocasService.js';
 import { usuarioTemModulo } from './services/funcoesService.js';
 import { servicoSituacao } from './services/situacaoService.js';
 import { iniciarRegistroMassivos } from './services/massivosHistoricoService.js';
@@ -384,6 +385,8 @@ iniciarMonitorOlt({
 iniciarContratacoesPendentes(io);
 // Avaliações novas do atendimento (evento avaliacoes:nova) para quem tem a área Chamados.
 iniciarAvaliacoesNovas(io);
+// Trocas de senha do Wi-Fi pela Central (evento wifi:troca) para quem tem a área Chamados.
+iniciarTrocasWifi(io);
 
 // Mapa de usuários conectados e suas abas/dispositivos ativos
 const usuariosConectados = new Map();
@@ -977,7 +980,7 @@ const entrarSalasDoUsuario = async (socket, { usuarioId, empresaId, motivo = 'sy
     socket.join(SALA_CONTRATACOES);
     try {
         const [pessoa] = await db.query('SELECT id, perfil, setor_id, empresa_id FROM usuarios WHERE id = ? AND deletado_em IS NULL', [usuarioKey]);
-        if (pessoa[0] && await usuarioTemModulo(pessoa[0], 'chamados')) socket.join(SALA_AVALIACOES);
+        if (pessoa[0] && await usuarioTemModulo(pessoa[0], 'chamados')) { socket.join(SALA_AVALIACOES); socket.join(SALA_WIFI_TROCAS); }
     } catch (e) { console.error('Avaliações: não foi possível entrar na sala:', e?.message); }
     socket.emit('contratacoes:resumo', obterResumoContratacoes());
 
