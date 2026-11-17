@@ -12,6 +12,9 @@ const lerConfig = () => ({
     FEED_URL: (process.env.CONTRATACOES_FEED_URL
         || "https://acessanet.com.br/api/integracoes/contratacoes/pendentes").trim(),
     FEED_TOKEN: (process.env.CONTRATACOES_FEED_TOKEN || "").trim(),
+    ANDAMENTO_URL: (process.env.CONTRATACOES_ANDAMENTO_URL
+        || (process.env.CONTRATACOES_FEED_URL || "https://acessanet.com.br/api/integracoes/contratacoes/pendentes")
+            .replace(/\/pendentes\/?$/, "/andamento")).trim(),
     POLL_MS: Math.max(15_000, Number(process.env.CONTRATACOES_POLL_MS || 30_000)),
 });
 const TIMEOUT_MS = 10_000;
@@ -38,20 +41,42 @@ export function normalizarFeed(payload = {}) {
     return { pendentes: Math.max(0, pendentes), itens };
 }
 
+const STATUS_ANDAMENTO = new Set(["em_analise", "em_atendimento", "agendado", "sem_cobertura", "contratado", "cancelado"]);
+
+/** Pedidos que já saíram de "novo" (aba Contratações: em atendimento, cancelados com motivo, encerrados). */
+export function normalizarAndamento(payload = {}) {
+    return (Array.isArray(payload.items) ? payload.items : [])
+        .map((item) => ({
+            id: Number(item?.id),
+            protocolo: texto(item?.protocol, 40),
+            cliente: texto(item?.customerName),
+            plano: texto(item?.planName),
+            cidade: texto(item?.city, 60),
+            criadoEm: texto(item?.createdAt, 40),
+            atualizadoEm: texto(item?.updatedAt, 40),
+            status: texto(item?.status, 30),
+            responsavel: texto(item?.assignedAdminName, 80) || null,
+            motivo: texto(item?.cancelReason, 500) || null,
+        }))
+        .filter((item) => Number.isInteger(item.id) && item.id > 0 && STATUS_ANDAMENTO.has(item.status))
+        .sort((a, b) => (b.atualizadoEm || "").localeCompare(a.atualizadoEm || "") || b.id - a.id)
+        .slice(0, 150);
+}
+
 /** Pedidos mais novos que o último id visto; `ultimoVisto` null = primeira leitura (nada é "novo"). */
 export function selecionarNovos(itens, ultimoVisto) {
     if (ultimoVisto === null) return [];
     return itens.filter((item) => item.id > ultimoVisto);
 }
 
-let estado = { conectado: false, pendentes: 0, itens: [], atualizadoEm: null };
+let estado = { conectado: false, pendentes: 0, itens: [], andamento: [], atualizadoEm: null };
 
 export function obterResumoContratacoes() {
     return { ...estado };
 }
 
 export function iniciarContratacoesPendentes(io, { buscar = fetch } = {}) {
-    const { FEED_URL, FEED_TOKEN, POLL_MS } = lerConfig();
+    const { FEED_URL, FEED_TOKEN, ANDAMENTO_URL, POLL_MS } = lerConfig();
     if (!FEED_TOKEN) {
         console.warn("Contratações: CONTRATACOES_FEED_TOKEN não configurado; aviso de contratações desligado.");
         return () => {};
@@ -83,7 +108,17 @@ export function iniciarContratacoesPendentes(io, { buscar = fetch } = {}) {
             const maiorId = itens.reduce((max, item) => Math.max(max, item.id), 0);
             ultimoVisto = Math.max(ultimoVisto ?? 0, maiorId);
 
-            estado = { conectado: true, pendentes, itens, atualizadoEm: new Date().toISOString() };
+            // Em andamento é complementar: se o site ainda não tem o endereço (ou falhar), mantém o que já tinha.
+            let andamento = estado.andamento;
+            try {
+                const r2 = await buscar(ANDAMENTO_URL, {
+                    headers: { Authorization: `Bearer ${FEED_TOKEN}`, Accept: "application/json" },
+                    signal: AbortSignal.timeout(TIMEOUT_MS),
+                });
+                if (r2.ok) andamento = normalizarAndamento(await r2.json());
+            } catch { /* mantém o anterior */ }
+
+            estado = { conectado: true, pendentes, itens, andamento, atualizadoEm: new Date().toISOString() };
             publicar();
             if (novos.length) io.to(SALA_CONTRATACOES).emit(EVENTO_NOVO, { itens: novos });
         } catch (err) {
