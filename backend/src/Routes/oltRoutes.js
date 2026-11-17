@@ -8,6 +8,7 @@ import {
     obterPanorama,
     oltCloudConfigurada,
 } from "../services/oltCloudService.js";
+import { bairrosDosAfetados } from "../services/oltBairrosService.js";
 import { estabilidadeDoContrato, marcarUsoAnalises, obterInstaveis, obterRankingPons, obterSinalCritico } from "../services/oltInsightsService.js";
 import { usuarioTemModulo } from "../services/funcoesService.js";
 import { sincronizarAlertasIgnorados } from "../services/iaAdminService.js";
@@ -112,6 +113,21 @@ router.get("/integrations/olt/incidentes/:id/clientes", authMiddleware, exigirPe
             lote.forEach((e, k) => clientes.push({ contrato: e.contrato || null, nome: nomes[k] || null, serie: e.serie || null, ultimaQueda: e.ultimaQueda }));
         }
         return res.json({ configurada: true, total: unicos.length, exibidos: clientes.length, clientes });
+    } catch (erro) {
+        return responderErro(res, erro);
+    }
+});
+
+// Clientes afetados de uma queda por bairro (SGP) e por estado (sem energia x LOSS): separa energia de fibra.
+router.get("/integrations/olt/incidentes/:id/bairros", authMiddleware, exigirPermissao, async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const id = String(req.params.id || "").slice(0, 64);
+    if (!oltCloudConfigurada()) return res.json({ configurada: false, bairros: [] });
+    try {
+        const { incidentes } = await listarIncidentesAtivos();
+        const incidente = incidentes.find((i) => i.id === id);
+        if (!incidente) return res.status(404).json({ error: "Incidente não encontrado ou já encerrado." });
+        return res.json({ configurada: true, ...(await bairrosDosAfetados(await listarEquipamentosOffline(incidente))) });
     } catch (erro) {
         return responderErro(res, erro);
     }
