@@ -34,7 +34,7 @@ import { iniciarMonitorNaoAutorizadas } from './services/oltNaoAutorizadasServic
 import { usuarioPodeVerRedeOlt } from './Routes/oltRoutes.js';
 import { dashboardRelay } from './services/dashboardRelayService.js';
 import { registrarWorkspace, removerWorkspace } from './services/workspacePresenceService.js';
-import { agendarPresenca as agendarPresencaEscritorio, avisarVisita as avisarVisitaEscritorio, iniciarEscritorio } from './services/escritorioService.js';
+import { agendarPresenca as agendarPresencaEscritorio, avisarVisita as avisarVisitaEscritorio, definirFonteOnline, iniciarEscritorio } from './services/escritorioService.js';
 import { dispositivoValido, marcarSaida, registrarVisto } from './services/workspaceDispositivosService.js';
 import {
     iniciarContratacoesPendentes,
@@ -408,6 +408,11 @@ let leiturasGruposTabelaGarantidaPromise = null;
 
 const normalizarId = (id) => String(id);
 
+// O mapa do Escritório mostra como online quem está conectado ao chat (mesma fonte da bolinha verde), além de quem tem o Workspace aberto.
+definirFonteOnline((empresaId) => [...usuariosConectados.entries()]
+    .filter(([, presenca]) => presenca?.sockets?.size > 0 && String(presenca.empresaId) === String(empresaId))
+    .map(([usuarioId]) => usuarioId));
+
 const obterPresencaUsuario = (usuarioId) => (
     usuariosConectados.get(normalizarId(usuarioId))
 );
@@ -590,6 +595,7 @@ const registrarUsuarioConectado = (socket, usuarioId, empresaId) => {
     presenca.sockets.add(socket.id);
     socket.data.usuarioId = usuarioKey;
     socket.data.empresaId = empresaKey;
+    agendarPresencaEscritorio(); // o mapa do Escritório acompanha quem conecta (junta avisos seguidos)
 
     return presenca;
 };
@@ -1501,6 +1507,7 @@ io.on('connection', (socket) => {
     socket.on('disconnect', async () => {
         const presenca = removerUsuarioConectado(socket);
         const saiu = removerWorkspace(socket.id);
+        agendarPresencaEscritorio(); // quem saiu do chat deixa de contar como online no mapa
         if (saiu) {
             io.to(`empresa_${socket.data.workspaceEmpresaId}`).emit('workspace_presence_changed');
             agendarPresencaEscritorio();

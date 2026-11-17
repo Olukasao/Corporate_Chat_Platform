@@ -55,11 +55,22 @@ export async function sincronizarDiretorio() {
     return enviar("workspace-directory", { companyName: c.nomeEmpresa, people });
 }
 
+// Quem está conectado ao chat agora (a mesma fonte da bolinha verde do chat); registrada pelo server.js.
+let fonteOnline = () => [];
+export const definirFonteOnline = (fn) => { fonteOnline = typeof fn === "function" ? fn : () => []; };
+
+/**
+ * "Online" no mapa = Workspace aberto OU conectado ao chat. O sinal "Workspace aberto" sozinho é frágil (fica só em memória e some
+ * em qualquer reinício ou piscada de conexão); quem aparece com a bolinha verde no chat também aparece online no Escritório.
+ */
 export async function enviarPresenca() {
     if (!escritorioAtivo()) return null;
     const c = cfg();
-    const ids = listarWorkspace(c.empresaId).map((u) => employeeId(u.usuario_id));
-    return enviar("workspace-presence", { companyId: COMPANY_ID, employeeIds: ids });
+    const ids = new Set(listarWorkspace(c.empresaId).map((u) => employeeId(u.usuario_id)));
+    let online = [];
+    try { online = fonteOnline(c.empresaId) || []; } catch { /* sem a fonte do chat: segue só com o sinal do Workspace */ }
+    for (const usuarioId of online) ids.add(employeeId(usuarioId));
+    return enviar("workspace-presence", { companyId: COMPANY_ID, employeeIds: [...ids] });
 }
 
 /** Quem está em ligação (situação "ligacao", alimentada pelo Workscape Phone): o boneco no mapa vira "em atendimento". */
