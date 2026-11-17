@@ -9,6 +9,7 @@ import {
     oltCloudConfigurada,
 } from "../services/oltCloudService.js";
 import { bairrosDosAfetados } from "../services/oltBairrosService.js";
+import { listarNaoAutorizadas } from "../services/oltNaoAutorizadasService.js";
 import { estabilidadeDoContrato, marcarUsoAnalises, obterInstaveis, obterRankingPons, obterSinalCritico } from "../services/oltInsightsService.js";
 import { usuarioTemModulo } from "../services/funcoesService.js";
 import { sincronizarAlertasIgnorados } from "../services/iaAdminService.js";
@@ -164,6 +165,17 @@ router.get("/integrations/olt/ranking", authMiddleware, exigirPermissao, async (
     if (!lerConfigurada(res)) return undefined;
     try {
         return res.json({ configurada: true, ...(await obterRankingPons()) });
+    } catch (erro) {
+        return responderErro(res, erro);
+    }
+});
+
+// ONUs instaladas esperando autorização na OLT (somente leitura).
+router.get("/integrations/olt/nao-autorizadas", authMiddleware, exigirPermissao, async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    if (!lerConfigurada(res)) return undefined;
+    try {
+        return res.json({ configurada: true, ...(await listarNaoAutorizadas()) });
     } catch (erro) {
         return responderErro(res, erro);
     }

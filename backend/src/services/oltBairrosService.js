@@ -2,6 +2,7 @@
 // Ajuda a separar queda de energia (muitos "Sem Energia", concentrada em bairros) de rompimento de fibra ("LOSS").
 // So leitura; devolve bairro e contagens, nunca nome, endereco completo ou contrato.
 import { consultarContratosUra } from "./sgpCustomerService.js";
+import { listaDe, todasAsPaginas } from "./oltCloudService.js";
 
 const TTL_BAIRRO_MS = 12 * 3600_000;
 const LIMITE_CLIENTES = 150;
@@ -45,6 +46,37 @@ export const leituraDaQueda = (semEnergia, loss) => {
     return "Mistura de sem energia e LOSS: pode ser queda de energia com fibra afetada, ou mais de um problema ao mesmo tempo.";
 };
 
+/** "lat, lng" (campo endereco_ll do SGP) -> [lat, lng] dentro do Brasil, com ~11 m de precisao; inválido/zerado = null. */
+export const lerCoordenada = (valor) => {
+    const m = (Array.isArray(valor) ? valor : String(valor ?? "").split(",")).map((x) => Number(String(x).trim()));
+    if (m.length !== 2 || !m.every(Number.isFinite) || (!m[0] && !m[1])) return null;
+    const [lat, lng] = m;
+    if (lat < -34 || lat > 6 || lng < -74 || lng > -34) return null;
+    return [Math.round(lat * 1e4) / 1e4, Math.round(lng * 1e4) / 1e4];
+};
+
+// ---- CTOs (OLT Cloud v2): so as proximas dos clientes afetados, para enxergar por onde a rede passa ----
+const TTL_CTOS_MS = 3600_000;
+let cacheCtos = { ate: 0, valor: null, pendente: null };
+export const listarCtos = async () => {
+    if (cacheCtos.valor && Date.now() < cacheCtos.ate) return cacheCtos.valor;
+    cacheCtos.pendente ??= (async () => {
+        const brutos = await todasAsPaginas("/api/v2/box/list", {}, ["results", "data"], 1000);
+        const valor = brutos.map((b) => ({ c: lerCoordenada(b.coordinates), portas: Number(b.ports) || null })).filter((b) => b.c).map((b) => ({ lat: b.c[0], lng: b.c[1], portas: b.portas }));
+        cacheCtos = { ate: Date.now() + TTL_CTOS_MS, valor, pendente: null };
+        return valor;
+    })().finally(() => { cacheCtos.pendente = null; });
+    return cacheCtos.pendente;
+};
+/** CTOs dentro da area dos pontos (com folga de ~450 m), no maximo `limite`. */
+export const ctosNaArea = (ctos, pontos, limite = 200) => {
+    if (!pontos.length) return [];
+    const lats = pontos.map((p) => p.lat), lngs = pontos.map((p) => p.lng);
+    const folga = 0.004;
+    const [a, b, c, d] = [Math.min(...lats) - folga, Math.max(...lats) + folga, Math.min(...lngs) - folga, Math.max(...lngs) + folga];
+    return ctos.filter((x) => x.lat >= a && x.lat <= b && x.lng >= c && x.lng <= d).slice(0, limite);
+};
+
 const bairroDoContrato = async (contrato, consultar) => {
     const hit = cache.get(contrato);
     if (hit && Date.now() < hit.ate) return hit;
@@ -53,7 +85,7 @@ const bairroDoContrato = async (contrato, consultar) => {
     try {
         const lista = await consultar({ contrato }, { signal: controle.signal });
         const c = (Array.isArray(lista) ? lista : []).find((x) => String(x?.contratoId ?? x?.contrato ?? "") === contrato) ?? lista?.[0];
-        const valor = { bairro: limpar(c?.endereco_bairro), cidade: limpar(c?.endereco_cidade) };
+        const valor = { bairro: limpar(c?.endereco_bairro), cidade: limpar(c?.endereco_cidade), coord: lerCoordenada(c?.endereco_ll) };
         if (cache.size > 6000) cache.clear();
         cache.set(contrato, { ...valor, ate: Date.now() + TTL_BAIRRO_MS });
         return valor;
@@ -79,12 +111,19 @@ export const bairrosDosAfetados = async (equipamentos, { consultar = consultarCo
     for (let i = 0; i < consultados.length; i += 6) {
         const lote = consultados.slice(i, i + 6);
         const dados = await Promise.all(lote.map((c) => bairroDoContrato(c, consultar)));
-        lote.forEach((c, k) => itens.push({ bairro: dados[k].bairro, cidade: dados[k].cidade, estado: unicos.get(c) }));
+        lote.forEach((c, k) => itens.push({ bairro: dados[k].bairro, cidade: dados[k].cidade, coord: dados[k].coord ?? null, estado: unicos.get(c) }));
     }
     let semEnergia = 0;
     for (const estado of unicos.values()) if (estado === "semEnergia") semEnergia += 1;
     const loss = unicos.size - semEnergia;
+    const pontos = itens.filter((it) => it.coord).map((it) => ({ lat: it.coord[0], lng: it.coord[1], estado: it.estado, bairro: bairroBonito(it.bairro) || "Sem bairro" })).slice(0, 400);
+    let ctos = [];
+    if (pontos.length) {
+        try { ctos = ctosNaArea(await listarCtos(), pontos); } catch { /* o mapa funciona sem as CTOs */ }
+    }
     return {
+        pontos,
+        ctos,
         total: unicos.size,
         consultados: itens.length,
         semContrato,

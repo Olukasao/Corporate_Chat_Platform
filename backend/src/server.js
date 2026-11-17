@@ -28,8 +28,9 @@ import { lerCookieAgenda, validarSessaoAgenda } from './services/agendaSessionSe
 import { iniciarAgendaTecnicosResumo } from './services/agendaTecnicosResumoService.js';
 import { iniciarBriefing } from './services/briefingService.js';
 import { iniciarLembretes } from './services/lembretesAlarme.js';
-import { iniciarMonitorOlt } from './services/oltCloudService.js';
+import { iniciarMonitorOlt, oltCloudConfigurada } from './services/oltCloudService.js';
 import { iniciarAquecimentoAnalises } from './services/oltInsightsService.js';
+import { iniciarMonitorNaoAutorizadas } from './services/oltNaoAutorizadasService.js';
 import { usuarioPodeVerRedeOlt } from './Routes/oltRoutes.js';
 import { dashboardRelay } from './services/dashboardRelayService.js';
 import { registrarWorkspace, removerWorkspace } from './services/workspacePresenceService.js';
@@ -373,6 +374,8 @@ dashboardRelay.start();
 // Incidentes de rede da OLT Cloud: quem tem acesso à rede entra na sala "olt_watchers" e recebe o aviso de novos incidentes.
 // Só liga se as credenciais da OLT Cloud estiverem no .env (OLTCLOUD_*).
 if (!AMBIENTE_TESTE) iniciarAquecimentoAnalises();
+// ONUs instaladas esperando autorização na OLT: avisa quem acompanha a rede quando aparece uma nova.
+if (!AMBIENTE_TESTE && oltCloudConfigurada()) iniciarMonitorNaoAutorizadas({ aoSurgir: (novas) => io.to('olt_watchers').emit('olt_onu_nao_autorizada', { itens: novas.slice(0, 5), total: novas.length }) });
 iniciarMonitorOlt({
     aoEventoMassa: (p) => io.to('olt_watchers').emit('olt_evento_massa', {
         semEnergia: p.semEnergia, loss: p.loss, aumento: p.aumento, olts: p.porOlt.slice(0, 3).map((o) => o.olt),
