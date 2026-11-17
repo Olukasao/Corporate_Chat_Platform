@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 process.env.OLTCLOUD_BASE_URL = "https://olt.example.test";
 process.env.OLTCLOUD_TOKEN = "token-fixo";
 
-const { incidenteRelevante, minimoClientesIncidente, listarIncidentesAtivos, listarEquipamentosOffline, incidenteAtivo, normalizarAlerta, oltCloudConfigurada, resumirEquipamentos, equipamentoAfetado, obterPanorama } =
+const { incidenteRelevante, minimoClientesIncidente, listarIncidentesAtivos, listarEquipamentosOffline, incidenteAtivo, normalizarAlerta, oltCloudConfigurada, resumirEquipamentos, equipamentoAfetado, obterPanorama, contarClientesReais, enriquecerComContratos } =
     await import("../src/services/oltCloudService.js");
 
 const resposta = (corpo, status = 200) => ({ ok: status < 400, status, json: async () => corpo });
@@ -159,6 +159,52 @@ test("incidente pequeno (1 cliente afetado) não entra na lista nem nos avisos",
     try {
         const { incidentes } = await listarIncidentesAtivos({ forcar: true });
         assert.deepEqual(incidentes.map((i) => i.id), ["2"]);
+    } finally {
+        globalThis.fetch = original;
+    }
+});
+
+test("clientes reais: só conta equipamento com contrato, nunca mais que o alerta e informa quantos não têm contrato", () => {
+    const eq = [
+        { contrato: "101", status: "LOSS" }, { contrato: "102", status: "Sem Energia" }, { contrato: "102", status: "LOSS" }, // 2 contratos (102 repetido)
+        { contrato: "", status: "LOSS" }, { contrato: "  ", status: "LOSS" }, { contrato: "", status: "Sem Energia" }, // sem contrato
+        { contrato: "103", status: "Online" }, { contrato: "", status: "Online" },
+    ];
+    const r = contarClientesReais({ dispositivosAtivos: 6, totalDispositivos: 8 }, eq);
+    assert.deepEqual(r, { dispositivosAtivos: 2, totalDispositivos: 3, semContrato: 4, dispositivosAtivosOlt: 6, totalDispositivosOlt: 8 });
+    // a PON tem mais gente offline que o alerta cobre: nunca passa do que o alerta diz
+    const muitos = Array.from({ length: 10 }, (_, k) => ({ contrato: String(200 + k), status: "LOSS" }));
+    assert.equal(contarClientesReais({ dispositivosAtivos: 4, totalDispositivos: 12 }, muitos).dispositivosAtivos, 4);
+    // alerta sem contagem: usa o que a PON mostra
+    assert.deepEqual(contarClientesReais({ dispositivosAtivos: null, totalDispositivos: null }, eq).dispositivosAtivos, 2);
+    // ninguem com contrato: 0 clientes reais
+    assert.equal(contarClientesReais({ dispositivosAtivos: 5, totalDispositivos: 5 }, [{ contrato: "", status: "LOSS" }]).dispositivosAtivos, 0);
+});
+
+test("incidente de PON troca a contagem do alerta pela de clientes com contrato; CTO e falha na lista mantêm a do alerta", async () => {
+    const original = globalThis.fetch;
+    const equipamentos = [
+        { serial_number: "a", status: "LOSS", external_client_contract_id: "11" },
+        { serial_number: "b", status: "LOSS", external_client_contract_id: "" },
+        { serial_number: "c", status: "LOSS", external_client_contract_id: null },
+        { serial_number: "d", status: "Online", external_client_contract_id: "12" },
+    ];
+    globalThis.fetch = async (url) => {
+        if (String(url).includes("olt_id=OLT9")) return resposta({ data: equipamentos });
+        return resposta({ data: [] });
+    };
+    try {
+        const pon = { id: "p", tipo: "pon_loss", oltId: "OLT9", slotPon: "1/2", pon: "2", dispositivosAtivos: 3, totalDispositivos: 4 };
+        const cto = { id: "c", tipo: "cto_loss", oltId: "OLT9", slotPon: "1/2", pon: "2", dispositivosAtivos: 3, totalDispositivos: 4 };
+        const semLista = { id: "x", tipo: "pon_down", oltId: "OLT-FALHA", slotPon: "1/3", pon: "3", dispositivosAtivos: 7, totalDispositivos: 9 };
+        const [a, b, c] = await enriquecerComContratos([pon, cto, semLista]);
+        assert.equal(a.dispositivosAtivos, 1);
+        assert.equal(a.totalDispositivos, 2);
+        assert.equal(a.semContrato, 2);
+        assert.equal(a.dispositivosAtivosOlt, 3);
+        assert.equal(b.dispositivosAtivos, 3); // CTO: a lista da PON nao separa por CTO, fica o numero do alerta
+        assert.equal(b.semContrato, undefined);
+        assert.equal(c.dispositivosAtivos, 0); // lista vazia = ninguem com contrato
     } finally {
         globalThis.fetch = original;
     }

@@ -238,7 +238,7 @@ export const listarIncidentesAtivos = async ({ forcar = false } = {}) => {
     if (!forcar && cacheIncidentes.valor && Date.now() < cacheIncidentes.ate) return cacheIncidentes.valor;
     cacheIncidentes.pendente ??= (async () => {
         const alertas = await listarAlertasRecentes();
-        const incidentes = alertas.map(normalizarAlerta).filter((a) => a.id && incidenteAtivo(a) && incidenteRelevante(a)).sort(ordenar);
+        const incidentes = (await enriquecerComContratos(alertas.map(normalizarAlerta).filter((a) => a.id && incidenteAtivo(a) && incidenteRelevante(a)).sort(ordenar))).sort(ordenar);
         const valor = { atualizadoEm: new Date().toISOString(), incidentes };
         cacheIncidentes = { ate: Date.now() + TTL_INCIDENTES_MS, valor, pendente: null };
         return valor;
@@ -266,22 +266,94 @@ export const equipamentosDoContrato = async (contrato) => {
     return listaDe(resposta, ["data", "equipment", "items", "results"]);
 };
 
-/** Equipamentos afetados (sem energia / LOSS) de uma PON; nunca os online. */
-export const listarEquipamentosOffline = async (incidente) => {
+/** Todos os equipamentos de uma PON (online e afetados), sem dados de acesso do cliente. */
+export const listarEquipamentosDaPon = async (incidente) => {
     const { slot, pon } = slotEPon(incidente);
     const filtros = slot && pon
         ? { olt_id: incidente.oltId, slot, pon }
         : { olt_id: incidente.oltId, pon_id: incidente.ponId || incidente.pon };
     const brutos = await todasAsPaginas("/api/v2/ftth/equipment/list", filtros, ["data", "equipment", "items", "results"], 1000);
-    return brutos
-        .map((e) => ({
-            contrato: texto(e, ["external_client_contract_id"]),
-            serie: texto(e, ["serial_number"]),
-            status: texto(e, ["status"]),
-            ultimaQueda: texto(e, ["last_disconnection"]) || null,
-            ultimaAtualizacao: texto(e, ["last_status_update"]) || null,
-        }))
-        .filter((e) => equipamentoAfetado(e.status));
+    return brutos.map((e) => ({
+        contrato: texto(e, ["external_client_contract_id"]),
+        serie: texto(e, ["serial_number"]),
+        status: texto(e, ["status"]),
+        ultimaQueda: texto(e, ["last_disconnection"]) || null,
+        ultimaAtualizacao: texto(e, ["last_status_update"]) || null,
+    }));
+};
+
+/** Equipamentos afetados (sem energia / LOSS) de uma PON; nunca os online. */
+export const listarEquipamentosOffline = async (incidente) =>
+    (await listarEquipamentosDaPon(incidente)).filter((e) => equipamentoAfetado(e.status));
+
+// ---- clientes REAIS: equipamento sem contrato cadastrado nao e cliente (ex.: ONU de teste, estoque, cadastro incompleto) ----
+const temContrato = (e) => /\d/.test(String(e?.contrato ?? ""));
+
+/**
+ * Conta so quem tem contrato. `afetados` = contratos unicos com equipamento afetado, nunca mais que o proprio alerta informa;
+ * `total` = contratos unicos na PON. `semContrato` = quanto do que o alerta conta nao e cliente.
+ */
+export const contarClientesReais = (incidente, equipamentos) => {
+    const todos = new Set();
+    const afetados = new Set();
+    let semContratoNaPon = 0;
+    for (const e of equipamentos) {
+        const c = temContrato(e) ? String(e.contrato).trim() : "";
+        if (c) todos.add(c);
+        if (equipamentoAfetado(e.status)) c ? afetados.add(c) : (semContratoNaPon += 1);
+    }
+    const alerta = incidente.dispositivosAtivos;
+    const reais = alerta === null ? afetados.size : Math.min(afetados.size, alerta);
+    return {
+        dispositivosAtivos: reais,
+        totalDispositivos: Math.max(todos.size, reais),
+        semContrato: alerta === null ? semContratoNaPon : Math.max(0, alerta - reais),
+        dispositivosAtivosOlt: alerta,
+        totalDispositivosOlt: incidente.totalDispositivos,
+    };
+};
+
+const TTL_EQUIPAMENTOS_PON_MS = 60_000;
+const MAX_INCIDENTES_ENRIQUECIDOS = 40;
+const SIMULTANEAS_ENRIQUECER = 4;
+const cacheEquipamentosPon = new Map(); // "olt|slot|pon" -> { ate, valor, pendente }
+const chavePon = (i) => `${i.oltId}|${i.slotPon}|${i.ponId || i.pon}`;
+const equipamentosDaPonEmCache = (incidente) => {
+    const chave = chavePon(incidente);
+    const hit = cacheEquipamentosPon.get(chave);
+    if (hit?.valor && Date.now() < hit.ate) return Promise.resolve(hit.valor);
+    if (hit?.pendente) return hit.pendente;
+    const pendente = listarEquipamentosDaPon(incidente)
+        .then((valor) => {
+            cacheEquipamentosPon.set(chave, { ate: Date.now() + TTL_EQUIPAMENTOS_PON_MS, valor, pendente: null });
+            return valor;
+        })
+        .catch((erro) => {
+            cacheEquipamentosPon.delete(chave);
+            throw erro;
+        });
+    cacheEquipamentosPon.set(chave, { ate: 0, valor: null, pendente });
+    if (cacheEquipamentosPon.size > 200) for (const [k, v] of cacheEquipamentosPon) if (!v.pendente && Date.now() >= v.ate) cacheEquipamentosPon.delete(k);
+    return pendente;
+};
+
+/** Incidentes de PON (pon_loss / pon_down / pon_no_power): troca a contagem do alerta pela de clientes com contrato. Falhou = mantem a do alerta. */
+export const enriquecerComContratos = async (incidentes) => {
+    const alvo = incidentes.filter((i) => String(i.tipo).startsWith("pon_") && i.oltId && (i.slotPon || i.pon || i.ponId)).slice(0, MAX_INCIDENTES_ENRIQUECIDOS);
+    const novos = new Map();
+    let proximo = 0;
+    const trabalhar = async () => {
+        while (proximo < alvo.length) {
+            const incidente = alvo[proximo++];
+            try {
+                novos.set(incidente.id, contarClientesReais(incidente, await equipamentosDaPonEmCache(incidente)));
+            } catch {
+                // sem a lista da PON: fica a contagem do alerta
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(SIMULTANEAS_ENRIQUECER, alvo.length) }, trabalhar));
+    return incidentes.map((i) => (novos.has(i.id) ? { ...i, ...novos.get(i.id) } : i));
 };
 
 // ---- panorama: quantos clientes estão afetados AGORA (evento regional de energia, LOSS), por OLT e por PON ----
