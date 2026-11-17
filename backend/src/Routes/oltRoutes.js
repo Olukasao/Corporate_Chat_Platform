@@ -8,6 +8,7 @@ import {
     obterPanorama,
     oltCloudConfigurada,
 } from "../services/oltCloudService.js";
+import { estabilidadeDoContrato, marcarUsoAnalises, obterInstaveis, obterRankingPons, obterSinalCritico } from "../services/oltInsightsService.js";
 import { usuarioTemModulo } from "../services/funcoesService.js";
 import { sincronizarAlertasIgnorados } from "../services/iaAdminService.js";
 import { searchCustomers } from "../services/sgpCustomerService.js";
@@ -111,6 +112,67 @@ router.get("/integrations/olt/incidentes/:id/clientes", authMiddleware, exigirPe
             lote.forEach((e, k) => clientes.push({ contrato: e.contrato || null, nome: nomes[k] || null, serie: e.serie || null, ultimaQueda: e.ultimaQueda }));
         }
         return res.json({ configurada: true, total: unicos.length, exibidos: clientes.length, clientes });
+    } catch (erro) {
+        return responderErro(res, erro);
+    }
+});
+
+// ---- análises (sinal crítico, instabilidade, ranking de PONs, estabilidade do contrato) ----
+const lerConfigurada = (res) => {
+    marcarUsoAnalises();
+    return oltCloudConfigurada() ? true : (res.json({ configurada: false }), false);
+};
+
+router.get("/integrations/olt/sinal", authMiddleware, exigirPermissao, async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    if (!lerConfigurada(res)) return undefined;
+    try {
+        return res.json({ configurada: true, ...(await obterSinalCritico({ dbm: req.query?.dbm })) });
+    } catch (erro) {
+        return responderErro(res, erro);
+    }
+});
+
+router.get("/integrations/olt/instaveis", authMiddleware, exigirPermissao, async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    if (!lerConfigurada(res)) return undefined;
+    try {
+        return res.json({ configurada: true, ...(await obterInstaveis()) });
+    } catch (erro) {
+        return responderErro(res, erro);
+    }
+});
+
+router.get("/integrations/olt/ranking", authMiddleware, exigirPermissao, async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    if (!lerConfigurada(res)) return undefined;
+    try {
+        return res.json({ configurada: true, ...(await obterRankingPons()) });
+    } catch (erro) {
+        return responderErro(res, erro);
+    }
+});
+
+// Nomes dos clientes (SGP, melhor esforço) para as listas de sinal e instabilidade: ?contratos=1,2,3 (até 60).
+router.get("/integrations/olt/nomes", authMiddleware, exigirPermissao, async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const contratos = [...new Set(String(req.query?.contratos || "").split(",").map((c) => c.replace(/\D/g, "").slice(0, 20)).filter(Boolean))].slice(0, 60);
+    const nomes = {};
+    for (let i = 0; i < contratos.length; i += 5) {
+        const lote = contratos.slice(i, i + 5);
+        const achados = await Promise.all(lote.map((c) => nomeDoContrato(c)));
+        lote.forEach((c, k) => { if (achados[k]) nomes[c] = achados[k]; });
+    }
+    return res.json({ nomes });
+});
+
+// Ficha do cliente: quedas nas últimas 24 h / 7 dias e sinal. Qualquer atendente logado (não traz endereço, login nem senha).
+router.get("/integrations/olt/clientes/:contrato/estabilidade", authMiddleware, async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    if (!oltCloudConfigurada()) return res.json({ configurada: false });
+    try {
+        const r = await estabilidadeDoContrato(req.params.contrato);
+        return res.json({ configurada: true, encontrado: Boolean(r), ...(r ?? {}) });
     } catch (erro) {
         return responderErro(res, erro);
     }

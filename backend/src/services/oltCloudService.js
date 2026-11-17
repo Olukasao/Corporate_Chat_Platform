@@ -101,7 +101,7 @@ const obterToken = async (c, forcar) => {
     return sessao.emAndamento;
 };
 
-const get = async (urlOuCaminho, tentativa = 0) => {
+export const get = async (urlOuCaminho, tentativa = 0) => {
     const c = lerConfig();
     if (!oltCloudConfigurada()) throw new OltCloudError("OLTCLOUD_NOT_CONFIGURED", "Integração com a OLT Cloud não configurada.", 503);
     const url = /^https?:\/\//i.test(urlOuCaminho) ? urlOuCaminho : `${c.baseUrl}${urlOuCaminho.startsWith("/") ? "" : "/"}${urlOuCaminho}`;
@@ -124,7 +124,7 @@ const get = async (urlOuCaminho, tentativa = 0) => {
     }
 };
 
-const listaDe = (resposta, chaves) => {
+export const listaDe = (resposta, chaves) => {
     if (Array.isArray(resposta)) return resposta;
     if (resposta && typeof resposta === "object") for (const k of chaves) if (Array.isArray(resposta[k])) return resposta[k];
     return [];
@@ -135,13 +135,13 @@ const proximo = (resposta) => {
     if (typeof n === "number" && Number.isFinite(n)) return n;
     return undefined;
 };
-const parametros = (filtros) => {
+export const parametros = (filtros) => {
     const p = new URLSearchParams();
     for (const [k, v] of Object.entries(filtros)) if (v !== undefined && v !== null && String(v) !== "") p.set(k, String(v));
     return p.toString();
 };
 // A API pode paginar: nunca assumir que a primeira página tem tudo.
-const todasAsPaginas = async (caminho, filtros, chaves, tamanhoPagina) => {
+export const todasAsPaginas = async (caminho, filtros, chaves, tamanhoPagina) => {
     const resultado = [];
     let proximaUrl;
     let pagina = 1;
@@ -158,14 +158,14 @@ const todasAsPaginas = async (caminho, filtros, chaves, tamanhoPagina) => {
     return resultado;
 };
 
-const texto = (obj, campos) => {
+export const texto = (obj, campos) => {
     for (const c of campos) {
         const v = obj?.[c];
         if (v !== undefined && v !== null && String(v).trim()) return String(v).trim();
     }
     return "";
 };
-const numero = (obj, campo) => {
+export const numero = (obj, campo) => {
     const v = Number(obj?.[campo]);
     return obj?.[campo] === null || obj?.[campo] === undefined || obj?.[campo] === "" || !Number.isFinite(v) ? null : v;
 };
@@ -220,7 +220,7 @@ const PAGINAS_RECENTES = 2; // ~1000 alertas mais novos (cerca de 2 semanas): in
  * A OLT Cloud lista os alertas do mais ANTIGO para o mais novo (hoje são ~28 mil). Ler só a primeira página
  * devolve alertas de anos atrás, todos encerrados. Por isso lê a contagem e busca as últimas páginas.
  */
-const listarAlertasRecentes = async () => {
+export const listarAlertasRecentes = async () => {
     const caminho = "/api/v2/ftth/alert/list";
     const sonda = await get(`${caminho}?page_size=1`);
     const total = sonda && typeof sonda === "object" && !Array.isArray(sonda) ? Number(sonda.count) : NaN;
@@ -417,7 +417,7 @@ export const obterPanorama = async ({ forcar = false } = {}) => {
 
 // ---- monitor: avisa quando surge um incidente novo ----
 let temporizador;
-const conhecidos = new Set();
+const conhecidos = new Map(); // id -> ultimo retrato do incidente (com o maior numero de afetados visto)
 let primeiraLeitura = true;
 let ultimoErroLogado = 0;
 
@@ -426,16 +426,43 @@ const ESPERA_MASSA_MS = 15 * 60_000;
 let ultimoTotalAfetado = null;
 let ultimoAvisoMassa = 0;
 
-export const iniciarMonitorOlt = ({ aoSurgir, aoEventoMassa, intervaloMs = 30_000 } = {}) => {
+/**
+ * Um incidente que sumiu da lista voltou ao normal? Le o alerta: fim preenchido = normalizou; sem fim mas sem ninguem afetado tambem;
+ * ignorado pela operacao ou ainda aberto = nao avisa. Devolve { fim, duracaoMs } ou null.
+ */
+export const desfechoDoIncidente = (alerta, agora = Date.now()) => {
+    if (!alerta || alerta.ignorado) return null;
+    const inicio = Date.parse(alerta.inicio ?? "");
+    const fimInformado = alerta.fim ? Date.parse(alerta.fim) : NaN;
+    const semAfetados = alerta.dispositivosAtivos !== null && alerta.dispositivosAtivos <= 0;
+    const fim = Number.isFinite(fimInformado) ? fimInformado : semAfetados ? agora : NaN;
+    if (!Number.isFinite(fim) || !Number.isFinite(inicio)) return null;
+    return { fim: new Date(fim).toISOString(), duracaoMs: Math.max(0, fim - inicio) };
+};
+
+export const iniciarMonitorOlt = ({ aoSurgir, aoEventoMassa, aoNormalizar, intervaloMs = 30_000 } = {}) => {
     if (temporizador || !oltCloudConfigurada()) return;
     const ciclo = async () => {
         try {
             const { incidentes } = await listarIncidentesAtivos({ forcar: true });
-            const ids = new Set(incidentes.map((i) => i.id));
+            const atuais = new Map(incidentes.map((i) => [i.id, i]));
             if (!primeiraLeitura)
                 for (const incidente of incidentes) if (!conhecidos.has(incidente.id)) aoSurgir?.(incidente);
-            conhecidos.clear();
-            ids.forEach((id) => conhecidos.add(id));
+            // quem estava na lista e sumiu: confere se normalizou (aviso "voltou", com a duracao total)
+            if (!primeiraLeitura && aoNormalizar) {
+                for (const [id, antes] of conhecidos) {
+                    if (atuais.has(id)) continue;
+                    try {
+                        const desfecho = desfechoDoIncidente(normalizarAlerta(await get(`/api/v2/ftth/alert/${encodeURIComponent(id)}`)));
+                        if (desfecho) aoNormalizar({ ...antes, ...desfecho });
+                    } catch { /* sem o detalhe do alerta: nao avisa */ }
+                }
+            }
+            for (const [id, atual] of atuais) {
+                const visto = conhecidos.get(id);
+                conhecidos.set(id, visto && (visto.dispositivosAtivos ?? 0) > (atual.dispositivosAtivos ?? 0) ? { ...atual, dispositivosAtivos: visto.dispositivosAtivos, totalDispositivos: visto.totalDispositivos } : atual);
+            }
+            for (const id of [...conhecidos.keys()]) if (!atuais.has(id)) conhecidos.delete(id);
             primeiraLeitura = false;
             // Evento regional (ex.: falta de energia): o total de clientes afetados salta entre uma leitura e outra.
             if (aoEventoMassa) {
