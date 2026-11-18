@@ -66,6 +66,33 @@ const usuarioBloqueadoParaReceberEfeitoSonoro = (usuario = {}) => {
     return BLOCKED_TARGET_FIRST_NAMES.includes(primeiroNome);
 };
 
+// Destinos exclusivos do dono dos efeitos sonoros (por padrão o Lucas): contas que só ele pode alcançar, mesmo que estejam ou venham a
+// entrar no grupo-alvo. Por padrão a conta "NOC" (a do monitor). Ajustável por SOUND_EFFECT_OWNER_ONLY_TARGET_USER_IDS (ids) e
+// SOUND_EFFECT_OWNER_ONLY_TARGET_NAMES (nomes completos, separados por vírgula).
+const obterAlvosSoDoDono = () => ({
+    ids: new Set(
+        String(process.env.SOUND_EFFECT_OWNER_ONLY_TARGET_USER_IDS || "")
+            .split(",")
+            .map((item) => Number(item.trim()))
+            .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+    nomes: new Set(
+        String(process.env.SOUND_EFFECT_OWNER_ONLY_TARGET_NAMES ?? "noc")
+            .split(",")
+            .map(normalizarTexto)
+            .filter(Boolean),
+    ),
+});
+
+export const alvoExclusivoDoDono = (alvo = {}) => {
+    if (!alvo) return false;
+    const { ids, nomes } = obterAlvosSoDoDono();
+    return ids.has(Number(alvo.id)) || nomes.has(normalizarTexto(alvo.nome));
+};
+
+/** Quem é o dono dos efeitos sonoros (o mesmo critério das permissões: por padrão o Lucas). */
+export const usuarioEhDonoDosEfeitosSonoros = (usuario = {}) => usuarioCombinaComDonoPadrao(usuario);
+
 export const obterNomeGrupoAlvoEfeitosSonoros = () => (
     String(process.env.SOUND_EFFECT_TARGET_GROUP_NAME || DEFAULT_TARGET_GROUP_NAME)
         .trim()
@@ -270,7 +297,30 @@ export const listarUsuariosAlvoEfeitosSonoros = async (usuario = {}) => {
         ORDER BY u.status DESC, u.nome ASC
     `, [usuario.empresa_id, usuario.id, grupoAlvo]);
 
-    return usuarios.filter((usuarioAlvo) => !usuarioBloqueadoParaReceberEfeitoSonoro(usuarioAlvo));
+    const dono = usuarioEhDonoDosEfeitosSonoros(usuario);
+    // quem não é o dono nunca vê nem alcança os destinos exclusivos dele
+    const lista = usuarios.filter((usuarioAlvo) => !usuarioBloqueadoParaReceberEfeitoSonoro(usuarioAlvo) && (dono || !alvoExclusivoDoDono(usuarioAlvo)));
+    if (!dono) return lista;
+
+    // o dono também alcança os destinos exclusivos (ex.: a conta NOC), mesmo fora do grupo-alvo
+    const { ids, nomes } = obterAlvosSoDoDono();
+    const criterios = [];
+    const params = [usuario.empresa_id, usuario.id];
+    if (ids.size) { criterios.push("u.id IN (?)"); params.push([...ids]); }
+    if (nomes.size) { criterios.push("LOWER(TRIM(u.nome)) IN (?)"); params.push([...nomes]); }
+    if (!criterios.length) return lista;
+    const [exclusivos] = await db.query(`
+        SELECT u.id, u.nome, u.email, u.avatar, u.status, u.ultimo_acesso, s.nome AS setor_nome
+        FROM usuarios u
+        LEFT JOIN setores s ON u.setor_id = s.id
+        WHERE u.empresa_id = ?
+          AND u.id != ?
+          AND u.deletado_em IS NULL
+          AND (${criterios.join(" OR ")})
+        ORDER BY u.nome ASC
+    `, params);
+    const jaNaLista = new Set(lista.map((u) => Number(u.id)));
+    return [...lista, ...exclusivos.filter((u) => !jaNaLista.has(Number(u.id)) && !usuarioBloqueadoParaReceberEfeitoSonoro(u))];
 };
 
 export const buscarUsuarioAlvoEfeitoSonoro = async (usuario = {}, targetUserId = null) => {
@@ -298,9 +348,22 @@ export const buscarUsuarioAlvoEfeitoSonoro = async (usuario = {}, targetUserId =
         LIMIT 1
     `, [idAlvo, usuario.empresa_id, grupoAlvo]);
 
-    const alvo = usuarios[0] || null;
+    let alvo = usuarios[0] || null;
 
     if (usuarioBloqueadoParaReceberEfeitoSonoro(alvo)) return null;
+
+    // destinos exclusivos do dono (ex.: a conta NOC): só o dono alcança, esteja ou não no grupo-alvo
+    if (alvo && alvoExclusivoDoDono(alvo) && !usuarioEhDonoDosEfeitosSonoros(usuario)) return null;
+    if (!alvo && usuarioEhDonoDosEfeitosSonoros(usuario)) {
+        const [diretos] = await db.query(`
+            SELECT u.id, u.nome, u.email, u.empresa_id, u.status
+            FROM usuarios u
+            WHERE u.id = ? AND u.empresa_id = ? AND u.deletado_em IS NULL
+            LIMIT 1
+        `, [idAlvo, usuario.empresa_id]);
+        const candidato = diretos[0] || null;
+        if (candidato && alvoExclusivoDoDono(candidato) && !usuarioBloqueadoParaReceberEfeitoSonoro(candidato)) alvo = candidato;
+    }
 
     return alvo;
 };
