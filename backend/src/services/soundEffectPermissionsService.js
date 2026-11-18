@@ -58,8 +58,20 @@ const usuarioCombinaComDonoPadrao = (usuario = {}) => {
     ));
 };
 
-const usuarioBloqueadoParaReceberEfeitoSonoro = (usuario = {}) => {
+// Contas bloqueadas para todo mundo, mas liberadas SÓ para o dono dos efeitos sonoros (o Lucas): Samuel (23), Leonardo Silva (31) e Diego (33).
+// Ajustável por SOUND_EFFECT_OWNER_ALLOWED_TARGET_USER_IDS (ids separados por vírgula).
+const obterAlvosLiberadosAoDono = () => new Set(
+    String(process.env.SOUND_EFFECT_OWNER_ALLOWED_TARGET_USER_IDS ?? "23,31,33")
+        .split(",")
+        .map((item) => Number(item.trim()))
+        .filter((id) => Number.isInteger(id) && id > 0),
+);
+export const alvoLiberadoAoDono = (alvo = {}) => Boolean(alvo) && obterAlvosLiberadosAoDono().has(Number(alvo.id));
+
+const usuarioBloqueadoParaReceberEfeitoSonoro = (usuario = {}, remetente = null) => {
     if (!usuario) return false;
+    // o dono pode enviar para as contas liberadas só a ele; para todos os outros o bloqueio continua
+    if (remetente && alvoLiberadoAoDono(usuario) && usuarioCombinaComDonoPadrao(remetente)) return false;
     if (BLOCKED_TARGET_USER_IDS.has(Number(usuario.id))) return true;
 
     const primeiroNome = normalizarTexto(usuario.nome).split(/\s+/)[0] || "";
@@ -299,7 +311,7 @@ export const listarUsuariosAlvoEfeitosSonoros = async (usuario = {}) => {
 
     const dono = usuarioEhDonoDosEfeitosSonoros(usuario);
     // quem não é o dono nunca vê nem alcança os destinos exclusivos dele
-    const lista = usuarios.filter((usuarioAlvo) => !usuarioBloqueadoParaReceberEfeitoSonoro(usuarioAlvo) && (dono || !alvoExclusivoDoDono(usuarioAlvo)));
+    const lista = usuarios.filter((usuarioAlvo) => !usuarioBloqueadoParaReceberEfeitoSonoro(usuarioAlvo, usuario) && (dono || !alvoExclusivoDoDono(usuarioAlvo)));
     if (!dono) return lista;
 
     // o dono também alcança os destinos exclusivos (ex.: a conta NOC), mesmo fora do grupo-alvo
@@ -308,6 +320,8 @@ export const listarUsuariosAlvoEfeitosSonoros = async (usuario = {}) => {
     const params = [usuario.empresa_id, usuario.id];
     if (ids.size) { criterios.push("u.id IN (?)"); params.push([...ids]); }
     if (nomes.size) { criterios.push("LOWER(TRIM(u.nome)) IN (?)"); params.push([...nomes]); }
+    const liberados = obterAlvosLiberadosAoDono();
+    if (liberados.size) { criterios.push("u.id IN (?)"); params.push([...liberados]); }
     if (!criterios.length) return lista;
     const [exclusivos] = await db.query(`
         SELECT u.id, u.nome, u.email, u.avatar, u.status, u.ultimo_acesso, s.nome AS setor_nome
@@ -320,7 +334,7 @@ export const listarUsuariosAlvoEfeitosSonoros = async (usuario = {}) => {
         ORDER BY u.nome ASC
     `, params);
     const jaNaLista = new Set(lista.map((u) => Number(u.id)));
-    return [...lista, ...exclusivos.filter((u) => !jaNaLista.has(Number(u.id)) && !usuarioBloqueadoParaReceberEfeitoSonoro(u))];
+    return [...lista, ...exclusivos.filter((u) => !jaNaLista.has(Number(u.id)) && !usuarioBloqueadoParaReceberEfeitoSonoro(u, usuario))];
 };
 
 export const buscarUsuarioAlvoEfeitoSonoro = async (usuario = {}, targetUserId = null) => {
@@ -350,7 +364,7 @@ export const buscarUsuarioAlvoEfeitoSonoro = async (usuario = {}, targetUserId =
 
     let alvo = usuarios[0] || null;
 
-    if (usuarioBloqueadoParaReceberEfeitoSonoro(alvo)) return null;
+    if (usuarioBloqueadoParaReceberEfeitoSonoro(alvo, usuario)) return null;
 
     // destinos exclusivos do dono (ex.: a conta NOC): só o dono alcança, esteja ou não no grupo-alvo
     if (alvo && alvoExclusivoDoDono(alvo) && !usuarioEhDonoDosEfeitosSonoros(usuario)) return null;
@@ -362,7 +376,7 @@ export const buscarUsuarioAlvoEfeitoSonoro = async (usuario = {}, targetUserId =
             LIMIT 1
         `, [idAlvo, usuario.empresa_id]);
         const candidato = diretos[0] || null;
-        if (candidato && alvoExclusivoDoDono(candidato) && !usuarioBloqueadoParaReceberEfeitoSonoro(candidato)) alvo = candidato;
+        if (candidato && (alvoExclusivoDoDono(candidato) || alvoLiberadoAoDono(candidato)) && !usuarioBloqueadoParaReceberEfeitoSonoro(candidato, usuario)) alvo = candidato;
     }
 
     return alvo;
