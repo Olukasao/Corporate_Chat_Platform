@@ -21,6 +21,15 @@ test("só quem está na lista ESCRITORIO_USUARIOS abre o Escritório", () => {
     assert.equal(usuarioPodeVerEscritorio(null, env), false);
 });
 
+test("ESCRITORIO_USUARIOS=* (ou todos) libera para qualquer usuário logado", () => {
+    for (const v of ["*", "todos", "TODOS"]) {
+        assert.equal(usuarioPodeVerEscritorio({ id: 3 }, { ESCRITORIO_USUARIOS: v }), true);
+        assert.equal(usuarioPodeVerEscritorio({ id: 99 }, { ESCRITORIO_USUARIOS: v }), true);
+        assert.equal(usuarioPodeVerEscritorio({}, { ESCRITORIO_USUARIOS: v }), false); // sem usuário logado, não
+        assert.equal(usuarioPodeVerEscritorio(null, { ESCRITORIO_USUARIOS: v }), false);
+    }
+});
+
 test("sem a lista: produção fecha para todos; só o ambiente de testes libera", () => {
     assert.equal(usuarioPodeVerEscritorio({ id: 3 }, {}), false);
     assert.equal(usuarioPodeVerEscritorio({ id: 3 }, { ESCRITORIO_USUARIOS: "" }), false);

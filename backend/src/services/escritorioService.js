@@ -17,11 +17,12 @@ const cfg = () => ({
 export const escritorioAtivo = () => { const c = cfg(); return Boolean(c.url && c.token); };
 
 /**
- * Quem pode ABRIR o Escritório no Workspace. ESCRITORIO_USUARIOS = ids de usuário separados por vírgula (ex.: "3").
+ * Quem pode ABRIR o Escritório no Workspace. ESCRITORIO_USUARIOS = ids de usuário separados por vírgula (ex.: "3"), ou "*" / "todos" para liberar a todos os usuários logados.
  * Sem a lista: só o ambiente de testes (AMBIENTE_TESTE=1) libera para todos; em produção ninguém vê (padrão fechado).
  */
 export const usuarioPodeVerEscritorio = (usuario, env = process.env) => {
     const ids = String(env.ESCRITORIO_USUARIOS || "").split(/[\s,;]+/).filter(Boolean);
+    if (ids.some((x) => x === "*" || x.toLowerCase() === "todos")) return usuario?.id !== undefined && usuario?.id !== null; // liberado para todo usuário logado
     if (ids.length) return usuario?.id !== undefined && usuario?.id !== null && ids.includes(String(usuario.id));
     return String(env.AMBIENTE_TESTE || "") === "1";
 };
