@@ -402,6 +402,7 @@ iniciarWifiMarketing(io);
 // Mapa de usuários conectados e suas abas/dispositivos ativos
 const usuariosConectados = new Map();
 const soundEffectTargetCooldowns = new Map();
+const volumeAoVivoUltimo = new Map(); // id de quem manda -> instante do último ajuste de volume ao vivo
 const soundEffectAdminHistory = new Map();
 let leiturasMensagensTabelaGarantida = false;
 let leiturasGruposTabelaGarantida = false;
@@ -1504,6 +1505,55 @@ io.on('connection', (socket) => {
                 ok: false,
                 error: 'Erro ao disparar efeito sonoro.',
             });
+        }
+    });
+
+    // Volume ao vivo: quem tem permissão muda o volume do som que está tocando no computador do alvo, sem disparar outro som.
+    // Mesmas regras do envio (permissão, alvo permitido e teto de volume de quem manda); só não conta nos limites de tempo.
+    socket.on('admin:set-prank-volume', async (data = {}, callback) => {
+        const responder = (payload) => emitirRespostaEfeitoSonoro(socket, callback, payload);
+        try {
+            const admin = await autenticarSocketUsuario(socket);
+            const permissaoSom = await obterPermissaoEfeitosSonoros(admin);
+            if (!(permissaoSom.can_use || permissaoSom.can_manage)) {
+                responder({ ok: false, error: 'Acesso negado.' });
+                return;
+            }
+
+            // o controle desliza rápido: no máximo ~15 ajustes por segundo por pessoa (o excedente é ignorado, o último valor chega no próximo)
+            const agora = Date.now();
+            const chave = String(admin.id);
+            if (agora - (volumeAoVivoUltimo.get(chave) || 0) < 65) {
+                responder({ ok: true, ignorado: true });
+                return;
+            }
+            volumeAoVivoUltimo.set(chave, agora);
+
+            const targetUserId = Number(data.target_user_id || data.usuario_id || data.user_id);
+            const alvo = await buscarUsuarioAlvoEfeitoSonoro(admin, targetUserId);
+            if (!alvo) {
+                responder({ ok: false, error: 'Destino não permitido.' });
+                return;
+            }
+
+            const socketIdsAlvo = obterSocketsDoUsuario(targetUserId);
+            if (!socketIdsAlvo.length) {
+                responder({ ok: false, error: 'Funcionário não está conectado ao Chat Interno.' });
+                return;
+            }
+
+            const volumePercent = resolverVolumePercent(data, permissaoSom.max_volume_percent);
+            const payload = {
+                volume: Math.min(1, volumePercent / 100),
+                volume_percent: volumePercent,
+                requested_by: admin.nome,
+                created_at: new Date().toISOString(),
+            };
+            socketIdsAlvo.forEach((socketId) => io.to(socketId).emit('prank-sound-volume', payload));
+            responder({ ok: true, volume_percent: volumePercent, sent_sockets: socketIdsAlvo.length });
+        } catch (err) {
+            console.error('[SOUND_EFFECTS] Erro ao ajustar o volume ao vivo:', err?.message || err);
+            responder({ ok: false, error: 'Erro ao ajustar o volume.' });
         }
     });
 
