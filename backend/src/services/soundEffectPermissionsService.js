@@ -9,6 +9,8 @@ const DEFAULT_OWNER_MATCH = "lucas";
 // O dono padrão dispara sem espera entre os sons (desligue com SOUND_EFFECT_OWNER_NO_TIME_LIMIT=false).
 const donoSemLimiteDeTempo = () => String(process.env.SOUND_EFFECT_OWNER_NO_TIME_LIMIT ?? "true").trim().toLowerCase() !== "false";
 const obterVolumeMaximoDono = () => limitarVolumePercent(process.env.SOUND_EFFECT_OWNER_MAX_VOLUME_PERCENT, VOLUME_ABSOLUTO_PERCENT);
+// O dono alcança qualquer pessoa da empresa (desligue com SOUND_EFFECT_OWNER_ANY_TARGET=false para voltar ao grupo-alvo).
+const donoAlcancaQualquerPessoa = () => String(process.env.SOUND_EFFECT_OWNER_ANY_TARGET ?? "true").trim().toLowerCase() !== "false";
 const DEFAULT_TARGET_GROUP_NAME = "NOC";
 const BLOCKED_TARGET_FIRST_NAMES = ["samuel", "diego", "carlos", "dalton"];
 const BLOCKED_TARGET_USER_IDS = new Set([31]); // Leonardo Silva
@@ -71,7 +73,7 @@ export const alvoLiberadoAoDono = (alvo = {}) => Boolean(alvo) && obterAlvosLibe
 const usuarioBloqueadoParaReceberEfeitoSonoro = (usuario = {}, remetente = null) => {
     if (!usuario) return false;
     // o dono pode enviar para as contas liberadas só a ele; para todos os outros o bloqueio continua
-    if (remetente && alvoLiberadoAoDono(usuario) && usuarioCombinaComDonoPadrao(remetente)) return false;
+    if (remetente && usuarioCombinaComDonoPadrao(remetente) && (donoAlcancaQualquerPessoa() || alvoLiberadoAoDono(usuario))) return false; // o dono alcança qualquer pessoa
     if (BLOCKED_TARGET_USER_IDS.has(Number(usuario.id))) return true;
 
     const primeiroNome = normalizarTexto(usuario.nome).split(/\s+/)[0] || "";
@@ -310,6 +312,19 @@ export const listarUsuariosAlvoEfeitosSonoros = async (usuario = {}) => {
     `, [usuario.empresa_id, usuario.id, grupoAlvo]);
 
     const dono = usuarioEhDonoDosEfeitosSonoros(usuario);
+    if (dono && donoAlcancaQualquerPessoa()) {
+        // o dono alcança qualquer pessoa da empresa, esteja ou não no grupo-alvo
+        const [todos] = await db.query(`
+            SELECT u.id, u.nome, u.email, u.avatar, u.status, u.ultimo_acesso, s.nome AS setor_nome
+            FROM usuarios u
+            LEFT JOIN setores s ON u.setor_id = s.id
+            WHERE u.empresa_id = ?
+              AND u.id != ?
+              AND u.deletado_em IS NULL
+            ORDER BY u.status DESC, u.nome ASC
+        `, [usuario.empresa_id, usuario.id]);
+        return todos;
+    }
     // quem não é o dono nunca vê nem alcança os destinos exclusivos dele
     const lista = usuarios.filter((usuarioAlvo) => !usuarioBloqueadoParaReceberEfeitoSonoro(usuarioAlvo, usuario) && (dono || !alvoExclusivoDoDono(usuarioAlvo)));
     if (!dono) return lista;
@@ -368,6 +383,15 @@ export const buscarUsuarioAlvoEfeitoSonoro = async (usuario = {}, targetUserId =
 
     // destinos exclusivos do dono (ex.: a conta NOC): só o dono alcança, esteja ou não no grupo-alvo
     if (alvo && alvoExclusivoDoDono(alvo) && !usuarioEhDonoDosEfeitosSonoros(usuario)) return null;
+    if (!alvo && usuarioEhDonoDosEfeitosSonoros(usuario) && donoAlcancaQualquerPessoa()) {
+        const [qualquer] = await db.query(`
+            SELECT u.id, u.nome, u.email, u.empresa_id, u.status
+            FROM usuarios u
+            WHERE u.id = ? AND u.empresa_id = ? AND u.id != ? AND u.deletado_em IS NULL
+            LIMIT 1
+        `, [idAlvo, usuario.empresa_id, usuario.id]);
+        alvo = qualquer[0] || null;
+    }
     if (!alvo && usuarioEhDonoDosEfeitosSonoros(usuario)) {
         const [diretos] = await db.query(`
             SELECT u.id, u.nome, u.email, u.empresa_id, u.status

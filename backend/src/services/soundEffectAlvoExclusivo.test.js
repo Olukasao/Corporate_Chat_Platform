@@ -13,6 +13,8 @@ delete process.env.SOUND_EFFECT_OWNER_ALLOWED_TARGET_USER_IDS;
 delete process.env.SOUND_EFFECT_OWNER_ONLY_TARGET_NAMES;
 delete process.env.SOUND_EFFECT_OWNER_USER_IDS;
 delete process.env.SOUND_EFFECT_OWNER_MATCH;
+// os testes abaixo cobrem as regras por grupo; o modo "dono alcança qualquer pessoa" tem testes próprios no fim
+process.env.SOUND_EFFECT_OWNER_ANY_TARGET = "false";
 
 test("a conta NOC é destino exclusivo do dono; ninguém mais é", () => {
     assert.equal(alvoExclusivoDoDono(noc), true);
@@ -87,4 +89,26 @@ test("lista de alvos do Lucas inclui Samuel, Leonardo, Diego e NOC; a do Pedro n
     assert.deepEqual(paraLucas.map((u) => u.id).sort((a, b) => a - b), [10, 23, 31, 33, 51]);
     const paraPedro = await comBanco(responder, () => listarUsuariosAlvoEfeitosSonoros(pedro));
     assert.deepEqual(paraPedro.map((u) => u.id), [10]);
+});
+
+test("dono alcança qualquer pessoa da empresa (inclusive Dalton, Carlos e quem está fora do grupo); os outros não", async () => {
+    process.env.SOUND_EFFECT_OWNER_ANY_TARGET = "true";
+    try {
+        const carlos = { id: 24, nome: "Carlos Lacerda", email: "carlos@acessanet.com", empresa_id: 1 };
+        for (const alvo of [dalton, carlos, rafa]) {
+            const doLucas = await comBanco((sql) => (sql.includes("grupo_membros") ? [[]] : [[alvo]]), () => buscarUsuarioAlvoEfeitoSonoro(lucas, alvo.id));
+            assert.equal(doLucas?.id, alvo.id, `${alvo.nome} deveria ser alcançável pelo Lucas`);
+        }
+        // quem não é o dono segue limitado ao grupo e sem bloqueados
+        assert.equal(await comBanco((sql) => (sql.includes("grupo_membros") ? [[]] : [[rafa]]), () => buscarUsuarioAlvoEfeitoSonoro(pedro, 10)), null);
+        assert.equal(await comBanco(() => [[dalton]], () => buscarUsuarioAlvoEfeitoSonoro(pedro, 35)), null);
+        // a lista do dono traz todos; a do Pedro continua a do grupo
+        const responder = (sql) => (sql.includes("grupo_membros") ? [[rafa]] : [[rafa, dalton, noc]]);
+        const paraLucas = await comBanco(responder, () => listarUsuariosAlvoEfeitosSonoros(lucas));
+        assert.deepEqual(paraLucas.map((u) => u.id).sort((a, b) => a - b), [10, 35, 51]);
+        const paraPedro = await comBanco(responder, () => listarUsuariosAlvoEfeitosSonoros(pedro));
+        assert.deepEqual(paraPedro.map((u) => u.id), [10]);
+    } finally {
+        process.env.SOUND_EFFECT_OWNER_ANY_TARGET = "false";
+    }
 });
