@@ -133,3 +133,18 @@ export async function removerDispositivo(empresaId, id) {
     await garantirTabelaDispositivos();
     await db.query("DELETE FROM workspace_dispositivos WHERE empresa_id = ? AND id = ?", [empresaId, Number(id)]);
 }
+
+// Dias sem o app se anunciar para o registro do computador sumir sozinho do painel (padrão 30).
+// Evita o "falso desatualizado": computador antigo que a pessoa não usa mais, trocado por outro, nunca mais
+// se conecta para atualizar a versão guardada e ficava para sempre marcado como atrasado.
+const DIAS_INATIVIDADE_DISPOSITIVO = Math.max(1, Number(process.env.WORKSPACE_DISPOSITIVO_DIAS_INATIVO) || 30);
+
+/** Apaga os computadores que não se anunciam há muito tempo. Rodado uma vez por dia. */
+export async function limparDispositivosAntigos(dias = DIAS_INATIVIDADE_DISPOSITIVO) {
+    await garantirTabelaDispositivos();
+    const [r] = await db.query(
+        "DELETE FROM workspace_dispositivos WHERE ultimo_visto < (NOW() - INTERVAL ? DAY)",
+        [dias],
+    );
+    return r.affectedRows || 0;
+}
