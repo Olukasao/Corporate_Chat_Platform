@@ -1314,6 +1314,9 @@ io.on('connection', (socket) => {
             volumePercent = resolverVolumePercent(data, permissaoSom.max_volume_percent);
             volume = volumePercent / 100;
 
+            // som escondido de quem envia (quem gerencia nunca tem sons escondidos)
+            if (sound && (permissaoSom.hidden_sounds || []).includes(sound.key)) sound = null;
+
             if (!sound) {
                 await registrarLogEfeitoSonoro({
                     admin,
@@ -1329,6 +1332,81 @@ io.on('connection', (socket) => {
                 });
                 return;
             }
+
+            // várias pessoas de uma vez (só quem gerencia os efeitos): `target_user_ids`; com uma só, segue o fluxo normal
+            const idsVarios = Array.isArray(data.target_user_ids)
+                ? [...new Set(data.target_user_ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 40)
+                : [];
+
+            if (idsVarios.length > 1) {
+                if (!permissaoSom.can_manage) {
+                    responder({ ok: false, error: 'Só quem gerencia os efeitos sonoros pode enviar para várias pessoas.' });
+                    return;
+                }
+
+                const semLimite = Boolean(permissaoSom.no_time_limit);
+                const agoraVarios = Date.now();
+                const limiteVarios = semLimite ? { permitido: true } : obterLimiteAdminEfeitoSonoro(admin.id, agoraVarios);
+                if (!limiteVarios.permitido) {
+                    const segundos = formatarEsperaSegundos(limiteVarios.retryAfterMs);
+                    responder({ ok: false, error: `Limite atingido. Aguarde ${segundos}s para enviar outro efeito.`, retry_after_seconds: segundos });
+                    return;
+                }
+
+                const payloadVarios = {
+                    sound: sound.path,
+                    sound_key: soundKey,
+                    label: sound.label,
+                    volume: Math.min(1, volume),
+                    volume_percent: volumePercent,
+                    requested_by: admin.nome,
+                    created_at: new Date().toISOString(),
+                };
+                const enviados = [];
+                const falhas = [];
+
+                for (const id of idsVarios) {
+                    const alvoVario = await buscarUsuarioAlvoEfeitoSonoro(admin, id);
+                    if (!alvoVario) { falhas.push({ id, motivo: 'destino não permitido' }); continue; }
+
+                    const sockets = obterSocketsDoUsuario(id);
+                    if (!sockets.length) {
+                        falhas.push({ id, nome: alvoVario.nome, motivo: 'offline' });
+                        await registrarLogEfeitoSonoro({ admin, alvo: alvoVario, soundKey, sound, volume, sucesso: false, erro: 'Funcionário offline' });
+                        continue;
+                    }
+
+                    const cooldownVario = semLimite ? { permitido: true } : obterCooldownAlvoEfeitoSonoro(admin.empresa_id, id, agoraVarios);
+                    if (!cooldownVario.permitido) {
+                        falhas.push({ id, nome: alvoVario.nome, motivo: `aguarde ${formatarEsperaSegundos(cooldownVario.retryAfterMs)}s` });
+                        continue;
+                    }
+                    if (!semLimite) registrarCooldownAlvoEfeitoSonoro(cooldownVario.cooldownKey, agoraVarios);
+
+                    sockets.forEach((socketId) => io.to(socketId).emit('play-prank-sound', payloadVarios));
+                    await registrarLogEfeitoSonoro({ admin, alvo: alvoVario, soundKey, sound, volume, sucesso: true, socketsEnviados: sockets.length });
+                    enviados.push({ id: alvoVario.id, nome: alvoVario.nome });
+                }
+
+                if (!semLimite && enviados.length) registrarEnvioAdminEfeitoSonoro(admin.id, agoraVarios);
+
+                const nomes = enviados.map((e) => e.nome).join(', ');
+                responder(enviados.length
+                    ? {
+                        ok: true,
+                        message: `Som "${sound.label}" enviado para ${enviados.length} ${enviados.length === 1 ? 'pessoa' : 'pessoas'}: ${nomes}.${falhas.length ? ` Não foi possível enviar para ${falhas.map((f) => f.nome || f.id).join(', ')}.` : ''}`,
+                        sent_users: enviados,
+                        failed_users: falhas,
+                        sound: { key: soundKey, label: sound.label },
+                    }
+                    : {
+                        ok: false,
+                        error: `Não foi possível enviar para ninguém (${falhas.map((f) => `${f.nome || f.id}: ${f.motivo}`).join('; ')}).`,
+                        failed_users: falhas,
+                    });
+                return;
+            }
+            if (idsVarios.length === 1) data.target_user_id = idsVarios[0];
 
             const targetUserId = Number(data.target_user_id || data.usuario_id || data.user_id);
 

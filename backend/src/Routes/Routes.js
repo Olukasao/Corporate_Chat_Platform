@@ -74,7 +74,9 @@ import {
 import {
     definirPermissaoUsoEfeitosSonoros,
     definirSemLimiteDeTempoEfeitosSonoros,
+    definirSonsEscondidosEfeitosSonoros,
     definirVolumeMaximoEfeitosSonoros,
+    filtrarSonsVisiveis,
     listarPermissoesEfeitosSonoros,
     listarUsuariosAlvoEfeitosSonoros,
     obterNomeGrupoAlvoEfeitosSonoros,
@@ -15709,7 +15711,7 @@ const listarEfeitosSonorosHandler = async (req, res) => {
         const permission = await obterPermissaoEfeitosSonoros(usuario);
 
         res.json({
-            sounds: listAllowedSoundEffects(),
+            sounds: filtrarSonsVisiveis(listAllowedSoundEffects(), permission),
             permission,
             target_group: obterNomeGrupoAlvoEfeitosSonoros(),
             users: await listarUsuariosAlvoEfeitosSonoros(usuario),
@@ -15765,7 +15767,7 @@ const uploadEfeitoSonoroHandler = async (req, res) => {
 
         res.status(201).json({
             sound,
-            sounds: listAllowedSoundEffects(),
+            sounds: filtrarSonsVisiveis(listAllowedSoundEffects(), await obterPermissaoEfeitosSonoros(usuarioSom)),
         });
     } catch (err) {
         if (req.file?.filename) {
@@ -15842,6 +15844,25 @@ route.put("/sound-effects/permissions/:userId/no-time-limit", authMiddleware, re
     } catch (err) {
         console.error("Erro ao salvar o limite de tempo dos efeitos sonoros:", err);
         res.status(err.status || 500).json({ error: err.message || "Erro ao salvar o limite de tempo." });
+    }
+});
+
+route.put("/sound-effects/permissions/:userId/hidden-sounds", authMiddleware, requireSoundEffectManager, async (req, res) => {
+    try {
+        const escondidos = await definirSonsEscondidosEfeitosSonoros({
+            usuario: req.soundEffectUser || req.user,
+            targetUserId: req.params.userId,
+            hidden: req.body?.hidden,
+        });
+
+        console.log(`[SOUND_EFFECTS] ${(req.soundEffectUser || req.user).nome} escondeu ${escondidos.length} som(ns) do usuário ${req.params.userId}.`);
+
+        res.json({
+            users: await listarPermissoesEfeitosSonoros(req.soundEffectUser || req.user),
+        });
+    } catch (err) {
+        console.error("Erro ao salvar sons escondidos:", err);
+        res.status(err.status || 500).json({ error: err.message || "Erro ao salvar os sons escondidos." });
     }
 });
 

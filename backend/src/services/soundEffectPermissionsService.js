@@ -1,4 +1,5 @@
 import db from "../db/db.js";
+import { listAllowedSoundEffects } from "./soundEffectsService.js";
 import { VOLUME_PADRAO_USUARIO_PERCENT, VOLUME_ABSOLUTO_PERCENT, limitarVolumePercent } from "./soundEffectVolume.js";
 
 let soundEffectPermissionsTabelaGarantida = false;
@@ -14,6 +15,15 @@ const donoAlcancaQualquerPessoa = () => String(process.env.SOUND_EFFECT_OWNER_AN
 const DEFAULT_TARGET_GROUP_NAME = "NOC";
 const BLOCKED_TARGET_FIRST_NAMES = ["samuel", "diego", "carlos", "dalton"];
 const BLOCKED_TARGET_USER_IDS = new Set([31]); // Leonardo Silva
+
+const lerSonsEscondidos = (valor) => {
+    try {
+        const lista = JSON.parse(String(valor || "[]"));
+        return Array.isArray(lista) ? [...new Set(lista.map((k) => String(k || "").trim().toLowerCase()).filter(Boolean))] : [];
+    } catch {
+        return [];
+    }
+};
 
 const normalizarTexto = (valor = "") => (
     String(valor || "")
@@ -162,6 +172,12 @@ export const garantirTabelaPermissoesEfeitosSonoros = async () => {
             ADD COLUMN IF NOT EXISTS no_time_limit TINYINT(1) NOT NULL DEFAULT 0
         `);
 
+        // sons escondidos de quem pode enviar (lista JSON de chaves de som); quem gerencia nunca é afetado
+        await db.query(`
+            ALTER TABLE sound_effect_permissions
+            ADD COLUMN IF NOT EXISTS hidden_sounds TEXT NULL
+        `);
+
         soundEffectPermissionsTabelaGarantida = true;
     })();
 
@@ -258,7 +274,7 @@ export const obterPermissaoEfeitosSonoros = async (usuario = {}) => {
     }
 
     const [rows] = await db.query(`
-        SELECT can_use, can_manage, max_volume_percent, no_time_limit
+        SELECT can_use, can_manage, max_volume_percent, no_time_limit, hidden_sounds
         FROM sound_effect_permissions
         WHERE user_id = ?
         LIMIT 1
@@ -273,7 +289,16 @@ export const obterPermissaoEfeitosSonoros = async (usuario = {}) => {
         can_manage: Boolean(permissao.can_manage),
         max_volume_percent: maxVolume,
         no_time_limit: Boolean(permissao.no_time_limit) || (usuarioCombinaComDonoPadrao(usuario) && donoSemLimiteDeTempo()),
+        // quem gerencia (o Lucas) vê todos os sons
+        hidden_sounds: permissao.can_manage || usuarioCombinaComDonoPadrao(usuario) ? [] : lerSonsEscondidos(permissao.hidden_sounds),
     };
+};
+
+/** Tira da lista os sons escondidos de quem pediu (quem gerencia vê todos). */
+export const filtrarSonsVisiveis = (sons = [], permissao = {}) => {
+    if (permissao.can_manage) return sons;
+    const escondidos = new Set(permissao.hidden_sounds || []);
+    return escondidos.size ? sons.filter((som) => !escondidos.has(som.key)) : sons;
 };
 
 export const usuarioPodeUsarEfeitosSonoros = async (usuario = {}) => {
@@ -421,6 +446,7 @@ export const listarPermissoesEfeitosSonoros = async (usuario = {}) => {
             COALESCE(sep.can_manage, 0) AS can_manage,
             COALESCE(sep.max_volume_percent, ${VOLUME_PADRAO_USUARIO_PERCENT}) AS max_volume_percent,
             COALESCE(sep.no_time_limit, 0) AS no_time_limit,
+            sep.hidden_sounds,
             sep.granted_by,
             sep.updated_at
         FROM usuarios u
@@ -439,6 +465,7 @@ export const listarPermissoesEfeitosSonoros = async (usuario = {}) => {
             ? Math.max(limitarVolumePercent(row.max_volume_percent), obterVolumeMaximoDono())
             : limitarVolumePercent(row.max_volume_percent),
         no_time_limit: Boolean(row.no_time_limit) || (usuarioCombinaComDonoPadrao(row) && donoSemLimiteDeTempo()),
+        hidden_sounds: lerSonsEscondidos(row.hidden_sounds),
     }));
 };
 
@@ -553,4 +580,43 @@ export const definirSemLimiteDeTempoEfeitosSonoros = async ({ usuario, targetUse
             no_time_limit = VALUES(no_time_limit),
             granted_by = VALUES(granted_by)
     `, [idAlvo, usuario.id, enabled ? 1 : 0]);
+};
+
+/** Define quais sons ficam escondidos de uma pessoa (ela não vê nem consegue enviar). Só quem gerencia; quem gerencia não pode ser afetado. */
+export const definirSonsEscondidosEfeitosSonoros = async ({ usuario, targetUserId, hidden } = {}) => {
+    await garantirTabelaPermissoesEfeitosSonoros();
+
+    const idAlvo = Number(targetUserId);
+    if (!Number.isInteger(idAlvo) || idAlvo <= 0 || !Array.isArray(hidden)) {
+        const error = new Error("Informe o usuário e a lista de sons a esconder.");
+        error.status = 400;
+        throw error;
+    }
+
+    const [usuarios] = await db.query(`
+        SELECT id, nome, email FROM usuarios WHERE id = ? AND empresa_id = ? AND deletado_em IS NULL LIMIT 1
+    `, [idAlvo, usuario.empresa_id]);
+    if (!usuarios[0]) {
+        const error = new Error("Usuário não encontrado.");
+        error.status = 404;
+        throw error;
+    }
+    if (usuarioCombinaComDonoPadrao(usuarios[0])) {
+        const error = new Error("Não é possível esconder sons de quem gerencia os efeitos.");
+        error.status = 400;
+        throw error;
+    }
+
+    const validas = new Set(listAllowedSoundEffects().map((som) => som.key));
+    const lista = [...new Set(hidden.map((k) => String(k || "").trim().toLowerCase()))].filter((k) => validas.has(k));
+
+    await db.query(`
+        INSERT INTO sound_effect_permissions (user_id, can_use, can_manage, granted_by, hidden_sounds)
+        VALUES (?, 0, 0, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            hidden_sounds = VALUES(hidden_sounds),
+            granted_by = VALUES(granted_by)
+    `, [idAlvo, usuario.id, JSON.stringify(lista)]);
+
+    return lista;
 };
