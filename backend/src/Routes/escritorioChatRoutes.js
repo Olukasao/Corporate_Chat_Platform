@@ -5,6 +5,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import db from "../db/db.js";
 import { escritorioAtivo, avisarVisita } from "../services/escritorioService.js";
+import { obterResumoAgendaTecnicos } from "../services/agendaTecnicosResumoService.js";
+import { listarIncidentesAtivos, oltCloudConfigurada } from "../services/oltCloudService.js";
 
 const empresaId = () => Number(process.env.ESCRITORIO_EMPRESA_ID || 1);
 const igual = (a, b) => { const x = createHash("sha256").update(a).digest(), y = createHash("sha256").update(b).digest(); return timingSafeEqual(x, y); };
@@ -151,6 +153,21 @@ export function criarRotasEscritorioChat() {
             const d = await atendimento("agent-conversations", { consulta: { email: u.email } }).catch((e) => (e.message.includes("cadastrada") || e.status === 409 ? { conversations: [], naoAtendente: true } : Promise.reject(e)));
             res.json({ tickets: d.conversations, naoAtendente: !!d.naoAtendente });
         } catch (e) { falha(res, e, "atendimentos"); }
+    });
+
+    // Incidentes de rede ativos (mesma lista da tela Rede OLT) para o rack do Escritório piscar. Só leitura, sem dados de clientes.
+    router.get("/rede/incidentes", async (_req, res) => {
+        try {
+            if (!oltCloudConfigurada()) return res.json({ configurada: false, incidentes: [] });
+            const { atualizadoEm, incidentes } = await listarIncidentesAtivos();
+            res.json({ configurada: true, atualizadoEm, incidentes: incidentes.map(({ id, tipo, olt, descricao, dispositivosAtivos, pon }) => ({ id, tipo, olt, descricao, dispositivosAtivos, pon })) });
+        } catch (e) { falha(res, e, "rede-incidentes"); }
+    });
+
+    // Quem está com OS em execução na Agenda de técnicos (só nome e situação, sem dados de cliente) para os carros do mapa.
+    router.get("/tecnicos-campo", (_req, res) => {
+        const r = obterResumoAgendaTecnicos();
+        res.json({ conectado: r.conectado, tecnicos: (r.tecnicos || []).map((t) => ({ nome: t.nome, situacao: t.situacao })) });
     });
 
     router.get("/pode-receber", async (req, res) => {
