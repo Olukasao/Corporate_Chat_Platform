@@ -115,6 +115,22 @@ export function criarRotasEscritorioChat() {
         } catch (e) { console.error("[ESCRITORIO-CHAT] ligar:", e.message); res.status(500).json({ error: "Falha ao pedir a ligação." }); }
     });
 
+    // Aviso do Escritório para o Workspace da pessoa (ex.: proposta de troca de monstrinho). Só texto curto; sem conteúdo de conversa.
+    router.post("/aviso", async (req, res) => {
+        try {
+            const para = id(req.body?.para);
+            const titulo = typeof req.body?.titulo === "string" ? req.body.titulo.trim().slice(0, 100) : "";
+            const texto = typeof req.body?.texto === "string" ? req.body.texto.trim().slice(0, 300) : "";
+            if (!para || !titulo) return res.status(400).json({ error: "Pedido inválido." });
+            const [r] = await db.query("SELECT id FROM usuarios WHERE id = ? AND empresa_id = ? AND deletado_em IS NULL", [para, empresaId()]);
+            if (!r.length) return res.status(404).json({ error: "Pessoa não encontrada." });
+            const io = req.app.get("io");
+            const alcancados = io ? (await io.in(`user_${para}`).fetchSockets()).length : 0;
+            if (alcancados) io.to(`user_${para}`).emit("escritorio_aviso", { titulo, texto, alvo: "/escritorio" });
+            res.json({ ok: true, entregue: alcancados > 0 });
+        } catch (e) { console.error("[ESCRITORIO-CHAT] aviso:", e.message); res.status(500).json({ error: "Falha ao enviar o aviso." }); }
+    });
+
     // Transferência de atendimento: os atendimentos moram na chat-api; aqui só traduzimos a pessoa (id) para o e-mail do atendente.
     const atendimento = async (caminho, { metodo = "GET", corpo, consulta } = {}) => {
         const base = String(process.env.ATENDIMENTO_S2S_URL || "").replace(/\/+$/, "");
