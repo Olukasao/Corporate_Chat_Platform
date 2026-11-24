@@ -16,11 +16,15 @@ export const MODULOS = [
     { id: "terminal", rotulo: "Terminal", grupo: "Operação" },
     { id: "atendimento", rotulo: "Atendimento (chat com clientes)", grupo: "Operação" },
     { id: "navegador", rotulo: "Navegador", grupo: "Operação" },
+    // Entra no roteador do cliente: só aparece para o setor que o administrador marcar (nunca por padrão)
+    { id: "roteador", rotulo: "Roteador do cliente", grupo: "Operação", fechado: true },
     { id: "suporte", rotulo: "Suporte T.I.", grupo: "Operação" },
     { id: "cursos", rotulo: "Cursos", grupo: "Conteúdo" },
     { id: "marketing", rotulo: "Marketing", grupo: "Conteúdo" },
 ];
 const IDS = new Set(MODULOS.map((m) => m.id));
+/** Módulos "fechados": setor sem configuração salva NÃO os vê (só administradores, ou setores em que foram marcados). */
+const PADRAO_ABERTO = MODULOS.filter((m) => !m.fechado).map((m) => m.id);
 
 let garantida = null;
 export const garantirTabelaFuncoes = () => {
@@ -41,7 +45,8 @@ const limpar = (lista) => [...new Set((Array.isArray(lista) ? lista : []).map(St
 
 /** Módulos liberados para o usuário, ou null quando não há restrição. */
 export const modulosDoUsuario = async (usuario) => {
-    if (!usuario || usuario.perfil === "admin") return null;
+    if (!usuario) return PADRAO_ABERTO;
+    if (usuario.perfil === "admin") return null;
     let setorId = usuario.setor_id;
     let empresaId = usuario.empresa_id;
     if ((setorId === undefined || empresaId === undefined) && usuario.id) {
@@ -49,11 +54,11 @@ export const modulosDoUsuario = async (usuario) => {
         setorId = r[0]?.setor_id;
         empresaId = r[0]?.empresa_id;
     }
-    if (!setorId) return null;
+    if (!setorId) return PADRAO_ABERTO;
     await garantirTabelaFuncoes();
     const [rows] = await db.query("SELECT modulos FROM workspace_funcoes_setor WHERE empresa_id = ? AND setor_id = ?", [empresaId, setorId]);
-    if (!rows[0]) return null;
-    try { return limpar(JSON.parse(rows[0].modulos)); } catch { return null; }
+    if (!rows[0]) return PADRAO_ABERTO;
+    try { return limpar(JSON.parse(rows[0].modulos)); } catch { return PADRAO_ABERTO; }
 };
 
 export const usuarioTemModulo = async (usuario, modulo) => {

@@ -39,6 +39,7 @@ import criarIaAdminRoutes from "./iaAdminRoutes.js";
 import { listarFuncoes, modulosDoUsuario, salvarFuncao } from "../services/funcoesService.js";
 import chamadosRoutes from "./chamadosRoutes.js";
 import clienteLigacaoRoutes from "./clienteLigacaoRoutes.js";
+import roteadorRoutes from "./roteadorRoutes.js";
 import presencaRoutes from "./presencaRoutes.js";
 import escritorioRoutes from "./escritorioRoutes.js";
 import escritorioChatRoutes from "./escritorioChatRoutes.js";
@@ -18128,6 +18129,7 @@ route.use("/admin/navegador", authMiddleware, criarRotasNavegadorAdmin({ require
 route.use("/ia", iaResumoRoutes);
 route.use("/chamados", chamadosRoutes);
 route.use("/clientes/ligacao", clienteLigacaoRoutes);
+route.use("/roteador", roteadorRoutes);
 route.use("/presenca", presencaRoutes);
 route.use("/escritorio", escritorioRoutes);
 route.use("/escritorio-s2s", escritorioChatRoutes);
