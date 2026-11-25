@@ -6,6 +6,7 @@ import { Router } from "express";
 import db from "../db/db.js";
 import { escritorioAtivo, avisarVisita } from "../services/escritorioService.js";
 import { obterResumoAgendaTecnicos } from "../services/agendaTecnicosResumoService.js";
+import { dashboardRelay } from "../services/dashboardRelayService.js";
 import { listarIncidentesAtivos, oltCloudConfigurada } from "../services/oltCloudService.js";
 
 const empresaId = () => Number(process.env.ESCRITORIO_EMPRESA_ID || 1);
@@ -178,6 +179,18 @@ export function criarRotasEscritorioChat() {
             const { atualizadoEm, incidentes } = await listarIncidentesAtivos();
             res.json({ configurada: true, atualizadoEm, incidentes: incidentes.map(({ id, tipo, olt, descricao, dispositivosAtivos, pon }) => ({ id, tipo, olt, descricao, dispositivosAtivos, pon })) });
         } catch (e) { falha(res, e, "rede-incidentes"); }
+    });
+
+    // Total de vendas do dia ("ATIVAÇÃO DE CONTRATO - COMUM" do Painel NOC, a mesma do aviso de venda do Workspace) para o Escritório comemorar.
+    router.get("/vendas", (_req, res) => {
+        dashboardRelay.start();
+        const norm = (v) => String(v).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[–—]/g, "-").replace(/\s*-\s*/g, "-").replace(/\s+/g, " ").trim().toUpperCase();
+        const alvo = norm("ATIVAÇÃO DE CONTRATO - COMUM");
+        const { connected, update } = dashboardRelay.read();
+        if (!connected || !update?.grupos) return res.json({ conectado: false, total: null });
+        let total = 0;
+        for (const [k, v] of Object.entries(update.grupos)) if (norm(k) === alvo && Number.isFinite(Number(v)) && Number(v) >= 0) total += Number(v);
+        res.json({ conectado: true, total });
     });
 
     // Quem está com OS em execução na Agenda de técnicos (só nome e situação, sem dados de cliente) para os carros do mapa.
