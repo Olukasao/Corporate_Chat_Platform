@@ -181,6 +181,32 @@ export function criarRotasEscritorioChat() {
         } catch (e) { falha(res, e, "rede-incidentes"); }
     });
 
+    // Mensagens ainda não lidas de uma pessoa (conversas diretas e grupos de que ela participa), como os contadores do chat.
+    // Usado pela missão "Caixa de entrada zerada" do Escritório. Só números, sem conteúdo de mensagem.
+    router.get("/nao-lidas", async (req, res) => {
+        try {
+            const u = await usuario(id(req.query.usuario));
+            if (!u) return res.status(404).json({ error: "Pessoa não encontrada." });
+            const oculta = "NOT EXISTS (SELECT 1 FROM mensagens_ocultas_usuario mou WHERE mou.mensagem_id = m.id AND mou.usuario_id = ?)";
+            const [[d]] = await db.query(`
+                SELECT COUNT(*) AS n FROM mensagens m
+                JOIN conversas_diretas cd ON cd.id = m.conversa_direta_id
+                WHERE (cd.usuario1_id = ? OR cd.usuario2_id = ?) AND m.remetente_id != ? AND m.deletada_em IS NULL AND m.lida = FALSE
+                  AND ${oculta}
+                  AND NOT EXISTS (SELECT 1 FROM conversas_ocultas_usuario cou WHERE cou.conversa_direta_id = cd.id AND cou.usuario_id = ?)
+            `, [u.id, u.id, u.id, u.id, u.id]);
+            const [[g]] = await db.query(`
+                SELECT COUNT(*) AS n FROM mensagens m
+                JOIN grupo_membros gm ON gm.grupo_id = m.grupo_id AND gm.usuario_id = ?
+                JOIN grupos gr ON gr.id = m.grupo_id AND gr.deletado_em IS NULL
+                WHERE m.remetente_id != ? AND m.deletada_em IS NULL AND ${oculta}
+                  AND m.id > COALESCE((SELECT gmr.last_read_message_id FROM group_message_reads gmr WHERE gmr.user_id = ? AND gmr.group_id = m.grupo_id LIMIT 1), 0)
+            `, [u.id, u.id, u.id, u.id]);
+            const diretas = Number(d?.n ?? 0), grupos = Number(g?.n ?? 0);
+            res.json({ diretas, grupos, total: diretas + grupos });
+        } catch (e) { falha(res, e, "nao-lidas"); }
+    });
+
     // Total de vendas do dia ("ATIVAÇÃO DE CONTRATO - COMUM" do Painel NOC, a mesma do aviso de venda do Workspace) para o Escritório comemorar.
     router.get("/vendas", (_req, res) => {
         dashboardRelay.start();
