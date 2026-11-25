@@ -68,6 +68,7 @@ import {
     isAllowedSoundUploadMime,
     listAllowedSoundEffects,
     normalizeSoundUploadExtension,
+    deleteSoundEffect,
     registerUploadedSoundEffect,
     removeUploadedSoundFile,
     validateUploadedAudioFile,
@@ -82,6 +83,7 @@ import {
     listarUsuariosAlvoEfeitosSonoros,
     obterNomeGrupoAlvoEfeitosSonoros,
     obterPermissaoEfeitosSonoros,
+    usuarioEhDonoDosEfeitosSonoros,
     usuarioPodeGerenciarEfeitosSonoros,
     usuarioPodeUsarEfeitosSonoros,
 } from "../services/soundEffectPermissionsService.js";
@@ -15785,6 +15787,38 @@ route.get("/admin/sound-effects", authMiddleware, requireSoundEffectAccess, list
 
 route.post("/sound-effects/upload", authMiddleware, requireSoundEffectAccess, uploadSoundEffectMiddleware, uploadEfeitoSonoroHandler);
 route.post("/admin/sound-effects/upload", authMiddleware, requireSoundEffectAccess, uploadSoundEffectMiddleware, uploadEfeitoSonoroHandler);
+
+// Apagar um áudio dos efeitos sonoros: só o dono dos efeitos (o Lucas).
+route.delete("/sound-effects/:soundKey", authMiddleware, requireSoundEffectAccess, async (req, res) => {
+    const usuario = req.soundEffectUser || req.user;
+    if (!usuarioEhDonoDosEfeitosSonoros(usuario)) {
+        return res.status(403).json({ error: "Só o dono dos efeitos sonoros pode apagar áudios." });
+    }
+    try {
+        const sound = deleteSoundEffect(req.params.soundKey);
+        if (!sound) return res.status(404).json({ error: "Áudio não encontrado." });
+        console.log(`[SOUND_EFFECTS] ${usuario.nome} apagou o áudio "${sound.label}".`);
+        try {
+            await registrarAuditoria({
+                usuario,
+                acao: "EXCLUIR_EFEITO_SONORO",
+                entidade: "efeito_sonoro_remoto",
+                entidadeId: sound.key,
+                tipo: AUDIT_TYPES.CHAT,
+                nivel: AUDIT_LEVELS.IMPORTANT,
+                origem: "CHAT_INTERNO_EFEITOS_SONOROS",
+                metadata: { som: sound },
+                req,
+            });
+        } catch (auditErr) {
+            console.error("Erro ao registrar auditoria de exclusão de efeito sonoro:", auditErr);
+        }
+        res.json({ removed: sound.key, sounds: filtrarSonsVisiveis(listAllowedSoundEffects(), await obterPermissaoEfeitosSonoros(usuario)) });
+    } catch (err) {
+        console.error("Erro ao apagar efeito sonoro:", err);
+        res.status(500).json({ error: "Erro ao apagar o áudio." });
+    }
+});
 
 route.get("/sound-effects/permissions", authMiddleware, requireSoundEffectManager, async (req, res) => {
     try {

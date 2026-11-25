@@ -289,6 +289,8 @@ export const obterPermissaoEfeitosSonoros = async (usuario = {}) => {
         can_manage: Boolean(permissao.can_manage),
         max_volume_percent: maxVolume,
         no_time_limit: Boolean(permissao.no_time_limit) || (usuarioCombinaComDonoPadrao(usuario) && donoSemLimiteDeTempo()),
+        // só o dono dos efeitos (o Lucas) pode apagar áudios
+        can_delete: usuarioCombinaComDonoPadrao(usuario),
         // quem gerencia (o Lucas) vê todos os sons
         hidden_sounds: permissao.can_manage || usuarioCombinaComDonoPadrao(usuario) ? [] : lerSonsEscondidos(permissao.hidden_sounds),
     };

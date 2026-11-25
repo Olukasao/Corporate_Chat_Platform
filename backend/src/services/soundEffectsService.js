@@ -110,10 +110,47 @@ const writeCustomSoundManifest = (sounds = []) => {
     fs.writeFileSync(CUSTOM_SOUNDS_MANIFEST_PATH, `${JSON.stringify(sounds, null, 2)}\n`);
 };
 
-export const listAllowedSoundEffects = () => [
-    ...Object.values(DEFAULT_SOUND_EFFECTS),
-    ...readCustomSoundManifest(),
-];
+// Sons do sistema que o dono dos efeitos apagou (os arquivos ficam, só saem da lista).
+const REMOVED_DEFAULTS_PATH = path.join(CUSTOM_SOUNDS_ROOT, "removed-defaults.json");
+
+const readRemovedDefaults = () => {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(REMOVED_DEFAULTS_PATH, "utf8"));
+        return new Set(Array.isArray(parsed) ? parsed.map((k) => String(k)) : []);
+    } catch {
+        return new Set();
+    }
+};
+
+export const listAllowedSoundEffects = () => {
+    const removed = readRemovedDefaults();
+    return [
+        ...Object.values(DEFAULT_SOUND_EFFECTS).filter((sound) => !removed.has(sound.key)),
+        ...readCustomSoundManifest(),
+    ];
+};
+
+/** Apaga um efeito sonoro: o enviado sai do manifesto e o arquivo é removido; o do sistema só sai da lista. null = não existe. */
+export const deleteSoundEffect = (soundKey = "") => {
+    const key = String(soundKey || "").trim().toLowerCase();
+    if (!key) return null;
+
+    const manifest = readCustomSoundManifest();
+    const custom = manifest.find((sound) => sound.key === key);
+    if (custom) {
+        writeCustomSoundManifest(manifest.filter((sound) => sound.key !== key).map(({ custom: _c, ...rest }) => rest));
+        removeUploadedSoundFile(custom.filename || path.basename(custom.path || ""));
+        return custom;
+    }
+
+    const removed = readRemovedDefaults();
+    const padrao = Object.values(DEFAULT_SOUND_EFFECTS).find((sound) => sound.key === key);
+    if (!padrao || removed.has(key)) return null;
+    removed.add(key);
+    ensureCustomSoundStorage();
+    fs.writeFileSync(REMOVED_DEFAULTS_PATH, `${JSON.stringify([...removed], null, 2)}\n`);
+    return padrao;
+};
 
 export const getAllowedSoundEffect = (soundKey = "") => {
     const key = String(soundKey || "").trim().toLowerCase();

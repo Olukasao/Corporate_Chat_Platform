@@ -43,3 +43,12 @@ test("esconder: só chaves de sons que existem, e não vale para o dono dos efei
     await assert.rejects(comBanco(responder, () => definirSonsEscondidosEfeitosSonoros({ usuario: lucas, targetUserId: 3, hidden: ["bruh"] })), /quem gerencia/);
     await assert.rejects(comBanco(responder, () => definirSonsEscondidosEfeitosSonoros({ usuario: lucas, targetUserId: 36, hidden: "bruh" })), /Informe/);
 });
+
+test("apagar áudios: só o Lucas (dono dos efeitos) recebe can_delete", async () => {
+    const responder = (sql) => {
+        if (sql.includes("SELECT can_use, can_manage")) return [[{ can_use: 1, can_manage: 1, max_volume_percent: 70, no_time_limit: 0, hidden_sounds: null }]];
+        return [[]];
+    };
+    assert.equal((await comBanco(responder, () => obterPermissaoEfeitosSonoros(lucas))).can_delete, true);
+    assert.equal((await comBanco(responder, () => obterPermissaoEfeitosSonoros(pedro))).can_delete, false);
+});
