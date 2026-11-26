@@ -207,6 +207,32 @@ export function criarRotasEscritorioChat() {
         } catch (e) { falha(res, e, "nao-lidas"); }
     });
 
+    // Missões do Escritório ligadas ao trabalho: o que a pessoa já fez HOJE (dia de São Paulo, o mesmo fuso do banco).
+    // Só sim/não: nenhum texto de mensagem, número de telefone ou nome de lembrete sai daqui.
+    router.get("/trabalho-hoje", async (req, res) => {
+        try {
+            const u = await usuario(id(req.query.usuario));
+            if (!u) return res.status(404).json({ error: "Pessoa não encontrada." });
+            const tem = async (sql, args) => { try { const [r] = await db.query(sql, args); return r.length > 0; } catch (e) { if (e.code === "ER_NO_SUCH_TABLE") return false; throw e; } };
+            // Respondeu rápido: numa conversa direta, mandou mensagem até 5 min depois de uma mensagem do colega
+            // (a mensagem anterior da conversa é do outro, não de conta-robô, como o aviso dos lembretes).
+            const respondeu = await tem(`
+                SELECT 1 FROM mensagens m
+                JOIN conversas_diretas cd ON cd.id = m.conversa_direta_id AND (cd.usuario1_id = ? OR cd.usuario2_id = ?)
+                JOIN mensagens p ON p.id = (SELECT MAX(q.id) FROM mensagens q WHERE q.conversa_direta_id = m.conversa_direta_id AND q.id < m.id AND q.deletada_em IS NULL)
+                JOIN usuarios pu ON pu.id = p.remetente_id AND pu.senha <> '!'
+                WHERE m.remetente_id = ? AND m.criada_em >= CURDATE() AND m.deletada_em IS NULL
+                  AND p.remetente_id <> m.remetente_id AND p.criada_em >= m.criada_em - INTERVAL 5 MINUTE
+                LIMIT 1`, [u.id, u.id, u.id]);
+            const aula = await tem("SELECT 1 FROM cursos_progresso WHERE usuario_id = ? AND concluida_em >= CURDATE() LIMIT 1", [u.id])
+                || await tem("SELECT 1 FROM wiki_aulas_progresso WHERE usuario_id = ? AND concluida = 1 AND concluida_em >= CURDATE() LIMIT 1", [u.id]);
+            // lembrete que tocou hoje e a pessoa marcou "feito" (a limpeza automática só fecha os de 3 dias atrás)
+            const lembrete = await tem("SELECT 1 FROM lembrete_disparos WHERE usuario_id = ? AND empresa_id = ? AND status = 'feito' AND disparou_em >= CURDATE() LIMIT 1", [u.id, empresaId()]);
+            const ligacao = await tem("SELECT 1 FROM phone_calls WHERE usuario_id = ? AND empresa_id = ? AND direcao = 'in' AND resultado = 'atendida' AND inicio >= CURDATE() LIMIT 1", [u.id, empresaId()]);
+            res.json({ respondeu, aula, lembrete, ligacao });
+        } catch (e) { falha(res, e, "trabalho-hoje"); }
+    });
+
     // Total de vendas do dia ("ATIVAÇÃO DE CONTRATO - COMUM" do Painel NOC, a mesma do aviso de venda do Workspace) para o Escritório comemorar.
     router.get("/vendas", (_req, res) => {
         dashboardRelay.start();
